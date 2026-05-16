@@ -44,10 +44,11 @@ upserts catalog rows and replaces only future inventory.
 
 `SEED_DAYS=45` by default. Override per-run: `SEED_DAYS=90 npm run db:seed`.
 
-The seed generates ~9k flights and ~250k seat rows for 45 days against
-the full catalog (LHR + SFO + CDG + AMS as origins, 16 destinations).
-Expect 30-60s on a healthy connection — the script batches per-day
-inserts so it doesn't paginate one row at a time.
+The seed generates ~4.8k flights and ~220k seat rows for 45 days against
+the full catalog (17 airports — LHR + SFO as hubs, CDG + AMS as
+secondary origins, 13 further destinations; 53 routes). Expect 30-60s
+on a healthy connection — the script batches per-day inserts so it
+doesn't paginate one row at a time.
 
 ## Layout
 
