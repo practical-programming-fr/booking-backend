@@ -58,9 +58,10 @@ src/app.ts                      Hono app + middleware + route mounting
 src/server.ts                   Local dev entry (Node @hono/node-server)
 src/env.ts                      Zod-validated env loader
 src/db/                         Drizzle schema + postgres-js client
-src/lib/                        Pricing, PNR, seat helpers
+src/lib/                        Pricing, PNR, inventory generation helpers
 src/data/                       Static catalog (airports, aircraft, cabins, meals, routes, seats)
-src/routes/                     One file per resource (health, airports, routes, flights, …)
+src/domain/                     Booking lifecycle (loader, totals, booking, seats, payments, cron)
+src/routes/                     One file per resource (health, airports, routes, flights, bookings, me, cron)
 supabase/migrations/            Hand-written SQL — source of truth for the schema
 supabase/config.toml            Local Supabase CLI config (optional)
 scripts/migrate.ts              Apply SQL migrations; --reset drops the schema first
@@ -70,7 +71,7 @@ tests/                          Vitest unit tests
 vercel.json                     Vercel rewrites + cron schedules
 ```
 
-## Endpoints (v0.1)
+## Endpoints
 
 | Method | Path | Notes |
 |---|---|---|
@@ -82,9 +83,21 @@ vercel.json                     Vercel rewrites + cron schedules
 | `GET` | `/v1/flights/calendar?from&to&month&cabin` | Month-grid of price-per-day |
 | `GET` | `/v1/flights/:id` | Detail incl. per-cabin fares |
 | `GET` | `/v1/flights/:id/seat-map?cabin=A` | Seat geometry + availability |
+| `POST` | `/v1/bookings` | Create draft (returns PNR + 10-min hold window) |
+| `GET` | `/v1/bookings/:pnr` | Owner via session, or guest with `?email=` |
+| `POST` | `/v1/bookings/:pnr/contact` | Save lead-traveller contact |
+| `POST` | `/v1/bookings/:pnr/passengers` | Upsert passenger list |
+| `POST` | `/v1/bookings/:pnr/seats` | Hold or clear seat assignments |
+| `POST` | `/v1/bookings/:pnr/meals` | Assign dining plans |
+| `POST` | `/v1/bookings/:pnr/payment-intent` | Mock payment intent + status flip |
+| `POST` | `/v1/bookings/:pnr/confirm` | Pay → ticket → status=confirmed |
+| `POST` | `/v1/bookings/:pnr/cancel` | Cancel + release seats / refund |
+| `GET` | `/v1/me/trips` | List bookings for this browser session |
+| `POST` / `GET` | `/v1/_cron/release-expired-holds` | Sweep expired holds; auth via `CRON_SECRET` |
 
-Write-side endpoints (bookings, holds, payments, confirm) land in the
-next PR.
+Every authenticated booking endpoint requires an `x-booking-session: <uuid>`
+header. The frontend keeps that UUID in `localStorage` per browser so
+bookings persist without auth.
 
 ## Deployment
 
