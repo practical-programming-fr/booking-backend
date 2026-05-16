@@ -85,7 +85,7 @@ create table public.routes (
   to_iata             char(3) not null references public.airports(iata) check (from_iata <> to_iata),
   duration_min        integer not null check (duration_min > 0),
   fare_from_eur       integer not null check (fare_from_eur > 0),
-  freq_per_week       integer not null check (freq_per_week between 1 and 28),
+  freq_per_week       integer not null check (freq_per_week between 1 and 70),
   haul                text not null check (haul in ('short', 'long')),
   default_aircraft    text not null references public.aircraft_types(code),
   unique (from_iata, to_iata)
