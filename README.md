@@ -26,8 +26,28 @@ npm run dev
 | `npm run build` | Type-check the project (no JS emitted; Vercel handles the actual build) |
 | `npm test` | Run vitest unit tests |
 | `npm run db:migrate` | Apply pending SQL migrations from `supabase/migrations/` |
-| `npm run db:seed` | Upsert catalog + regenerate next 30 days of flight inventory |
-| `npm run db:reset` | Drop the public schema, re-apply migrations, re-seed |
+| `npm run db:seed` | Upsert catalog + regenerate next 45 days of flight inventory |
+| `npm run db:wipe` | `truncate … restart identity cascade` every table, keeps schema |
+| `npm run db:reseed` | `db:wipe` then `db:seed` (data refresh, no schema change) |
+| `npm run db:reset` | Drop the `public` schema entirely, re-apply migrations, re-seed |
+
+### Picking the right reset
+
+- **Schema is fine, want fresh data** → `npm run db:reseed`
+- **Schema has changed and you want a clean slate** → `npm run db:reset`
+- **Just delete everything without re-seeding** → `npm run db:wipe`
+
+`db:seed` itself is idempotent and safe to re-run on its own — it
+upserts catalog rows and replaces only future inventory.
+
+### Seed horizon
+
+`SEED_DAYS=45` by default. Override per-run: `SEED_DAYS=90 npm run db:seed`.
+
+The seed generates ~9k flights and ~250k seat rows for 45 days against
+the full catalog (LHR + SFO + CDG + AMS as origins, 16 destinations).
+Expect 30-60s on a healthy connection — the script batches per-day
+inserts so it doesn't paginate one row at a time.
 
 ## Layout
 
@@ -42,8 +62,9 @@ src/data/                       Static catalog (airports, aircraft, cabins, meal
 src/routes/                     One file per resource (health, airports, routes, flights, …)
 supabase/migrations/            Hand-written SQL — source of truth for the schema
 supabase/config.toml            Local Supabase CLI config (optional)
-scripts/migrate.ts              Apply SQL migrations
-scripts/seed.ts                 Run the seed pipeline
+scripts/migrate.ts              Apply SQL migrations; --reset drops the schema first
+scripts/seed.ts                 Upsert catalog + regenerate inventory
+scripts/wipe.ts                 Truncate every table without touching the schema
 tests/                          Vitest unit tests
 vercel.json                     Vercel rewrites + cron schedules
 ```

@@ -1,6 +1,7 @@
-// Route catalog. Two hubs (LHR, SFO) each fly to every other airport.
-// Aircraft selection is by haul. Duration and base fare are derived from the
-// marketing site's tables; haul is automatic at 6h.
+// Route catalog. Two hubs (LHR, SFO) fly to every other airport in the
+// network, plus a small footprint from CDG and AMS to match the marketing
+// site's BookingStrip. Aircraft selection is by haul. Duration and base
+// fare are derived from the marketing site's tables; haul is automatic at 6h.
 
 import { airports, type SeedAirport } from "./airports.js";
 
@@ -54,15 +55,45 @@ function pickAircraft(durationMin: number): string {
 }
 
 function buildRoutesFromHub(hub: SeedAirport, durations: Record<string, number>): SeedRoute[] {
+  return buildRoutesFromOrigin(hub, durations, freqTargets);
+}
+
+// Secondary origins: smaller, hand-picked footprints that match what the
+// marketing site's BookingStrip already exposes as origin options. Useful
+// for richer search results across the demo network.
+
+const cdgDurations: Record<string, number> = {
+  LHR:  80, AMS:  85, BCN: 105, FCO: 130, IST: 200, LIS: 175, ATH: 200,
+  JFK: 470, SFO: 645, DXB: 415, GRU: 695, HND: 740,
+};
+const cdgFreq: Record<string, number> = {
+  LHR: 28, AMS: 21, BCN: 14, FCO: 14, IST: 7, LIS: 14, ATH: 7,
+  JFK: 14, SFO: 7, DXB: 14, GRU: 5, HND: 4,
+};
+
+const amsDurations: Record<string, number> = {
+  LHR:  85, CDG:  85, BCN: 130, CPH:  90, IST: 200, LIS: 195, ATH: 220,
+  JFK: 480, SFO: 645, DXB: 410, SIN: 805,
+};
+const amsFreq: Record<string, number> = {
+  LHR: 28, CDG: 21, BCN: 14, CPH: 14, IST: 7, LIS: 7, ATH: 7,
+  JFK: 14, SFO: 4, DXB: 14, SIN: 4,
+};
+
+function buildRoutesFromOrigin(
+  origin: SeedAirport,
+  durations: Record<string, number>,
+  freq: Record<string, number>,
+): SeedRoute[] {
   return airports
-    .filter((airport) => airport.iata !== hub.iata && durations[airport.iata] != null)
+    .filter((airport) => airport.iata !== origin.iata && durations[airport.iata] != null)
     .map((airport) => {
       const durationMin = durations[airport.iata]!;
       const fareFromEur = baseFares[airport.iata] ?? 200;
-      const freqPerWeek = freqTargets[airport.iata] ?? 7;
+      const freqPerWeek = freq[airport.iata] ?? 7;
       const haul: "short" | "long" = durationMin > 360 ? "long" : "short";
       return {
-        fromIata: hub.iata,
+        fromIata: origin.iata,
         toIata: airport.iata,
         durationMin,
         fareFromEur,
@@ -75,8 +106,12 @@ function buildRoutesFromHub(hub: SeedAirport, durations: Record<string, number>)
 
 const lhr = airports.find((airport) => airport.iata === "LHR")!;
 const sfo = airports.find((airport) => airport.iata === "SFO")!;
+const cdg = airports.find((airport) => airport.iata === "CDG")!;
+const ams = airports.find((airport) => airport.iata === "AMS")!;
 
 export const routes: SeedRoute[] = [
   ...buildRoutesFromHub(lhr, lhrDurations),
   ...buildRoutesFromHub(sfo, sfoDurations),
+  ...buildRoutesFromOrigin(cdg, cdgDurations, cdgFreq),
+  ...buildRoutesFromOrigin(ams, amsDurations, amsFreq),
 ];

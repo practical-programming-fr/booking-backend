@@ -104,11 +104,32 @@ schema already has both columns.
 ```bash
 npm install
 npm run db:migrate    # apply SQL migrations
-npm run db:seed       # populate catalog + 90 days of flights
+npm run db:seed       # populate catalog + 45 days of flights (idempotent)
 npm run dev           # http://localhost:8787
 npm run build
 npm test
 ```
+
+### Reset story
+
+- `npm run db:reseed` — wipe data, regenerate inventory (most common).
+- `npm run db:reset`  — drop the schema, re-apply migrations, re-seed.
+- `npm run db:wipe`   — truncate everything, leave the schema in place.
+
+### Realistic inventory
+
+The seed feels like a real timetable, not a uniform grid:
+
+- Each route has a stable, varied departure-time pattern (no two routes
+  use the same slots, but the same route uses the same slots every day).
+- Prices modulate by day-of-week (weekend +18%, Tue/Wed −8%) and by
+  advance-purchase (≤7d +32%, ≤20d +12%, ≥50d −12%) on top of per-flight
+  jitter.
+- Seats are partially pre-taken — Atlas Suite around 50–75%, Linen
+  20–45%, with rates rising as departure approaches. All deterministic
+  so the seed reproduces exactly.
+- Flight numbers are stable per (route, slot) so the same route always
+  appears as e.g. FL 318 morning + FL 320 evening.
 
 ## Deployment
 
