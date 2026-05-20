@@ -4,34 +4,50 @@ import { loadEnv } from "../env.js";
 import * as schema from "./schema.js";
 
 let cached: ReturnType<typeof drizzle<typeof schema>> | undefined;
-let cachedClient: ReturnType<typeof postgres> | undefined;
+let drizzleClient: ReturnType<typeof postgres> | undefined;
+let sqlClient: ReturnType<typeof postgres> | undefined;
 
-export function getDb() {
-  if (cached) {
-    return cached;
-  }
+function makeClient() {
   const env = loadEnv();
-  cachedClient = postgres(env.SUPABASE_DB_URL, {
+  return postgres(env.SUPABASE_DB_URL, {
     prepare: false,
     max: 5,
     idle_timeout: 20,
     connect_timeout: 10,
   });
-  cached = drizzle(cachedClient, { schema });
+}
+
+export function getDb() {
+  if (cached) {
+    return cached;
+  }
+  drizzleClient = makeClient();
+  cached = drizzle(drizzleClient, { schema });
   return cached;
 }
 
+// Raw postgres.js client used for the booking/payments/seats domain logic
+// that issues hand-written tagged-template SQL. Kept separate from the
+// drizzle-wrapped client because drizzle replaces postgres.js's built-in
+// type parsers, which would cause timestamptz columns to come back as raw
+// strings instead of Date instances.
 export function getSql() {
-  if (!cachedClient) {
-    getDb();
+  if (!sqlClient) {
+    sqlClient = makeClient();
   }
-  return cachedClient!;
+  return sqlClient;
 }
 
 export async function closeDb(): Promise<void> {
-  if (cachedClient) {
-    await cachedClient.end({ timeout: 5 });
-    cachedClient = undefined;
+  const closes: Array<Promise<unknown>> = [];
+  if (drizzleClient) {
+    closes.push(drizzleClient.end({ timeout: 5 }));
+    drizzleClient = undefined;
     cached = undefined;
   }
+  if (sqlClient) {
+    closes.push(sqlClient.end({ timeout: 5 }));
+    sqlClient = undefined;
+  }
+  await Promise.all(closes);
 }
