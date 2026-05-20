@@ -7,6 +7,9 @@ import { healthRoutes } from "./routes/health.js";
 import { airportsRoutes } from "./routes/airports.js";
 import { routesRoutes } from "./routes/routes.js";
 import { flightsRoutes } from "./routes/flights.js";
+import { bookingsRoutes } from "./routes/bookings.js";
+import { meRoutes } from "./routes/me.js";
+import { cronRoutes } from "./routes/cron.js";
 
 export function buildApp(): Hono {
   const env = loadEnv();
@@ -51,6 +54,9 @@ export function buildApp(): Hono {
   v1.route("/airports", airportsRoutes());
   v1.route("/routes", routesRoutes());
   v1.route("/flights", flightsRoutes());
+  v1.route("/bookings", bookingsRoutes());
+  v1.route("/me", meRoutes());
+  v1.route("/_cron", cronRoutes());
 
   app.route("/v1", v1);
   app.get("/", (c) =>
