@@ -53,7 +53,7 @@ doesn't paginate one row at a time.
 ## Layout
 
 ```
-index.ts                        Vercel Hono entrypoint (exports the app)
+api/index.ts                    Vercel Function entry (wraps the Hono app)
 src/app.ts                      Hono app + middleware + route mounting
 src/server.ts                   Local dev entry (Node @hono/node-server)
 src/env.ts                      Zod-validated env loader
@@ -109,8 +109,9 @@ This service is intended to deploy as a single Vercel Function:
 3. `vercel deploy --prod` (or push to `main` if you've wired up the GH
    integration).
 
-Vercel should use the **Hono** framework preset. The root `index.ts` exports
-the Hono app for production; `src/server.ts` is only for local `npm run dev`.
+Vercel should use the **Other** framework preset. The `api/index.ts` function
+wraps the Hono app for production; `src/server.ts` is only for local
+`npm run dev`.
 
 `vercel.json` declares a once-per-minute cron that pings
 `/v1/_cron/release-expired-holds` (endpoint lands with the booking-write
