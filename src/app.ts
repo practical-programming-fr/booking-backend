@@ -66,7 +66,9 @@ export function buildApp(): Hono {
   v1.route("/_cron", cronRoutes());
 
   app.route("/v1", v1);
-  app.route("/mcp", mcpRoutes({ internalFetch: (path, init) => app.request(path, init) }));
+  app.route("/mcp", mcpRoutes({
+    internalFetch: async (path, init) => app.request(path, init),
+  }));
   app.get("/", (c) =>
     c.json({
       name: "flylo-booking-backend",

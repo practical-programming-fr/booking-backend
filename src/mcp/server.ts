@@ -91,7 +91,7 @@ function withQuery(
   return `${url.pathname}${url.search}`;
 }
 
-function jsonPost(body?: unknown, headers?: HeadersInit): RequestInit {
+function jsonPost(body?: unknown, headers?: Record<string, string>): RequestInit {
   return {
     method: "POST",
     headers: {
@@ -102,7 +102,10 @@ function jsonPost(body?: unknown, headers?: HeadersInit): RequestInit {
   };
 }
 
-function sessionHeaders(env: Pick<Env, "BOOKING_SESSION_HEADER">, sessionId: string): HeadersInit {
+function sessionHeaders(
+  env: Pick<Env, "BOOKING_SESSION_HEADER">,
+  sessionId: string,
+): Record<string, string> {
   return { [env.BOOKING_SESSION_HEADER]: sessionId };
 }
 
