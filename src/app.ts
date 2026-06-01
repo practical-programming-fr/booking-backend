@@ -10,6 +10,7 @@ import { flightsRoutes } from "./routes/flights.js";
 import { bookingsRoutes } from "./routes/bookings.js";
 import { meRoutes } from "./routes/me.js";
 import { cronRoutes } from "./routes/cron.js";
+import { mcpRoutes } from "./routes/mcp.js";
 
 export function buildApp(): Hono {
   const env = loadEnv();
@@ -24,8 +25,14 @@ export function buildApp(): Hono {
         if (!origin) return env.BOOKING_ALLOWED_ORIGINS[0] ?? "*";
         return env.BOOKING_ALLOWED_ORIGINS.includes(origin) ? origin : null;
       },
-      allowHeaders: ["Content-Type", "Authorization", env.BOOKING_SESSION_HEADER],
-      exposeHeaders: ["x-request-id"],
+      allowHeaders: [
+        "Content-Type",
+        "Authorization",
+        env.BOOKING_SESSION_HEADER,
+        "MCP-Protocol-Version",
+        "Mcp-Session-Id",
+      ],
+      exposeHeaders: ["x-request-id", "Mcp-Session-Id"],
       credentials: true,
       maxAge: 600,
     }),
@@ -59,6 +66,7 @@ export function buildApp(): Hono {
   v1.route("/_cron", cronRoutes());
 
   app.route("/v1", v1);
+  app.route("/mcp", mcpRoutes({ internalFetch: (path, init) => app.request(path, init) }));
   app.get("/", (c) =>
     c.json({
       name: "flylo-booking-backend",
