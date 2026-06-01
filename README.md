@@ -4,7 +4,8 @@ A small Hono + TypeScript service on top of Supabase Postgres that powers
 the FlyLo booking flow. Designed to deploy as a single Vercel Function.
 
 See [`SPEC.md`](./SPEC.md) for the data model, endpoint inventory, and
-environment contract.
+environment contract. See [`docs/mcp.md`](./docs/mcp.md) for the MCP server
+tool inventory and usage guide.
 
 ## Quick start
 
@@ -141,6 +142,9 @@ not a tool argument. `get_booking` can instead use `email` for the same
 guest retrieval flow as `/v1/bookings/:pnr?email=...`. If `CRON_SECRET` is
 configured, call `release_expired_holds` with the matching
 `Authorization: Bearer <secret>` HTTP header on the `/mcp` request.
+
+For the full tool inventory, argument schemas, header requirements,
+JSON-RPC examples, and implementation map, see [`docs/mcp.md`](./docs/mcp.md).
 
 ## Deployment
 
