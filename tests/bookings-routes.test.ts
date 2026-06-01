@@ -60,6 +60,28 @@ describe("me routes", () => {
   });
 });
 
+describe("flight staff routes", () => {
+  it("rejects manifest requests with an invalid flight id before querying the DB", async () => {
+    stubEnv();
+    const { buildApp } = await import("../src/app.js");
+    const app = buildApp();
+    const res = await app.request("/v1/flights/not-a-uuid/manifest");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/invalid flight id/i);
+  });
+
+  it("rejects briefing requests with an invalid flight id before querying the DB", async () => {
+    stubEnv();
+    const { buildApp } = await import("../src/app.js");
+    const app = buildApp();
+    const res = await app.request("/v1/flights/not-a-uuid/briefing");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/invalid flight id/i);
+  });
+});
+
 describe("cron route", () => {
   it("requires the CRON_SECRET when configured", async () => {
     stubEnv();

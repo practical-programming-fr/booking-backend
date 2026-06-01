@@ -1,6 +1,7 @@
 // Drizzle schema. Hand-written to match `supabase/migrations/*.sql` — the
 // migrations are the source of truth, this file just gives us typed queries.
 
+import { sql } from "drizzle-orm";
 import {
   bigint,
   bigserial,
@@ -170,9 +171,21 @@ export const passengers = pgTable("passengers", {
   givenName: text("given_name").notNull(),
   familyName: text("family_name").notNull(),
   loyaltyNo: text("loyalty_no"),
+  loyaltyTier: text("loyalty_tier"),
+  serviceTags: text("service_tags").array().notNull().default(sql`'{}'::text[]`),
+  preferences: jsonb("preferences").notNull().default({}),
   notes: text("notes"),
   seatId: text("seat_id"),
   mealId: text("meal_id"),
+});
+
+export const bookingEvents = pgTable("booking_events", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  bookingPnr: char("booking_pnr", { length: 6 }).notNull(),
+  eventType: text("event_type").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  actor: text("actor").notNull().default("system"),
+  details: jsonb("details").notNull().default({}),
 });
 
 export const payments = pgTable("payments", {

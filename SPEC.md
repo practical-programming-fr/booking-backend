@@ -60,8 +60,9 @@ of truth. Summary:
 | `seat_holds` | 10-minute soft locks tied to a browser session |
 | `bookings` | The PNR / order, linked to a session and (optionally) a user |
 | `booking_segments` | Legs of a booking (v1: always one) |
-| `passengers` | Travelers on a booking + assigned seat + meal |
+| `passengers` | Travelers on a booking + assigned seat, meal, loyalty tier, and service tags |
 | `payments` | Mock charge records |
+| `booking_events` | Operational timeline for rebooking, disruption, and service notes |
 
 ## Endpoints
 
@@ -74,6 +75,8 @@ of truth. Summary:
 | `GET` | `/v1/flights/calendar` | `?from&to&month` — price-per-day grid |
 | `GET` | `/v1/flights/:id` | flight detail with cabin summary |
 | `GET` | `/v1/flights/:id/seat-map` | `?cabin=A` seat geometry + availability |
+| `GET` | `/v1/flights/:id/manifest` | staff/agent passenger manifest |
+| `GET` | `/v1/flights/:id/briefing` | VIP, service-recovery, and special-attention summary |
 | `POST` | `/v1/bookings` | create draft booking (returns `pnr`) |
 | `POST` | `/v1/bookings/:pnr/passengers` | upsert passenger list |
 | `POST` | `/v1/bookings/:pnr/seats` | hold seats |
@@ -104,7 +107,7 @@ schema already has both columns.
 ```bash
 npm install
 npm run db:migrate    # apply SQL migrations
-npm run db:seed       # populate catalog + 45 days of flights (idempotent)
+npm run db:seed       # populate rolling catalog, flights, bookings, manifests
 npm run dev           # http://localhost:8787
 npm run build
 npm test
@@ -112,7 +115,7 @@ npm test
 
 ### Reset story
 
-- `npm run db:reseed` — wipe data, regenerate inventory (most common).
+- `npm run db:reseed` — wipe data, regenerate demo inventory/bookings (most common).
 - `npm run db:reset`  — drop the schema, re-apply migrations, re-seed.
 - `npm run db:wipe`   — truncate everything, leave the schema in place.
 
@@ -130,6 +133,13 @@ The seed feels like a real timetable, not a uniform grid:
   so the seed reproduces exactly.
 - Flight numbers are stable per (route, slot) so the same route always
   appears as e.g. FL 318 morning + FL 320 evening.
+- `SEED_BASE_DATE=YYYY-MM-DD` can pin the rolling baseline; otherwise the
+  seed starts from today's UTC date.
+- Named demo bookings use stable PNRs (`VIP001`, `BIZ001`, `FAM001`,
+  `RBK001`, `RBKOLD`, `HLD001`) and include VIP, business, family,
+  rebooking/service-recovery, cancelled, and awaiting-payment scenarios.
+- Selected showcase cabins are normalized so named passengers, seat-map
+  status, manifest rows, and fare availability match.
 
 ## Deployment
 

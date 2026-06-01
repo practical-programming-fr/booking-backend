@@ -7,6 +7,7 @@ import {
   operatesOnDay,
   slotsForRoute,
 } from "../src/lib/inventory.js";
+import { isoDate, parseSeedBaseDate, startOfUtcDay } from "../src/lib/seed-date.js";
 
 describe("slotsForRoute", () => {
   it("returns one slot per ~7×/wk and is deterministic", () => {
@@ -128,5 +129,25 @@ describe("flightNumberFor", () => {
     const slot0 = parseInt(flightNumberFor(7, 0).slice(2), 10);
     const slot1 = parseInt(flightNumberFor(7, 1).slice(2), 10);
     expect(slot1 - slot0).toBe(2);
+  });
+});
+
+describe("seed date helpers", () => {
+  it("defaults to the current UTC day", () => {
+    const now = new Date("2026-06-01T16:42:10Z");
+    expect(parseSeedBaseDate(undefined, now).toISOString()).toBe("2026-06-01T00:00:00.000Z");
+  });
+
+  it("parses an explicit YYYY-MM-DD baseline", () => {
+    expect(parseSeedBaseDate("2026-06-15").toISOString()).toBe("2026-06-15T00:00:00.000Z");
+  });
+
+  it("rejects invalid baseline dates", () => {
+    expect(() => parseSeedBaseDate("2026-02-31")).toThrow(/valid calendar date/);
+    expect(() => parseSeedBaseDate("06/01/2026")).toThrow(/YYYY-MM-DD/);
+  });
+
+  it("formats dates as ISO calendar days", () => {
+    expect(isoDate(startOfUtcDay(new Date("2026-06-01T23:59:59Z")))).toBe("2026-06-01");
   });
 });

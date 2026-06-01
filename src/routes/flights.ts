@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { and, asc, between, eq, gte, sql } from "drizzle-orm";
-import { getDb } from "../db/client.js";
+import { getDb, getSql } from "../db/client.js";
 import {
   aircraftTypes,
   airports,
@@ -13,6 +13,7 @@ import {
   routes,
   seatMapTemplates,
 } from "../db/schema.js";
+import { loadFlightBriefing, loadFlightManifest } from "../domain/manifest.js";
 
 const isoDate = z
   .string()
@@ -38,6 +39,8 @@ const calendarSchema = z.object({
 const seatMapSchema = z.object({
   cabin: z.enum(["A", "P", "L"]),
 });
+
+const flightIdSchema = z.string().uuid();
 
 export function flightsRoutes(): Hono {
   const app = new Hono();
@@ -201,6 +204,36 @@ export function flightsRoutes(): Hono {
         flights: Number(row.flightCount),
       })),
     });
+  });
+
+  // --- /v1/flights/:id/manifest ---------------------------------------------
+  app.get("/:id/manifest", async (c) => {
+    const parsed = flightIdSchema.safeParse(c.req.param("id"));
+    if (!parsed.success) {
+      return c.json({ error: { message: "Invalid flight id", status: 400 } }, 400);
+    }
+
+    const manifest = await loadFlightManifest(getSql(), parsed.data);
+    if (!manifest) {
+      return c.json({ error: { message: "Flight not found", status: 404 } }, 404);
+    }
+
+    return c.json({ manifest });
+  });
+
+  // --- /v1/flights/:id/briefing ---------------------------------------------
+  app.get("/:id/briefing", async (c) => {
+    const parsed = flightIdSchema.safeParse(c.req.param("id"));
+    if (!parsed.success) {
+      return c.json({ error: { message: "Invalid flight id", status: 400 } }, 400);
+    }
+
+    const briefing = await loadFlightBriefing(getSql(), parsed.data);
+    if (!briefing) {
+      return c.json({ error: { message: "Flight not found", status: 404 } }, 404);
+    }
+
+    return c.json({ briefing });
   });
 
   // --- /v1/flights/:id -------------------------------------------------------

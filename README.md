@@ -26,7 +26,7 @@ npm run dev
 | `npm run build` | Type-check the project (no JS emitted; Vercel handles the actual build) |
 | `npm test` | Run vitest unit tests |
 | `npm run db:migrate` | Apply pending SQL migrations from `supabase/migrations/` |
-| `npm run db:seed` | Upsert catalog + regenerate next 45 days of flight inventory |
+| `npm run db:seed` | Upsert catalog + regenerate rolling demo data |
 | `npm run db:wipe` | `truncate … restart identity cascade` every table, keeps schema |
 | `npm run db:reseed` | `db:wipe` then `db:seed` (data refresh, no schema change) |
 | `npm run db:reset` | Drop the `public` schema entirely, re-apply migrations, re-seed |
@@ -38,17 +38,31 @@ npm run dev
 - **Just delete everything without re-seeding** → `npm run db:wipe`
 
 `db:seed` itself is idempotent and safe to re-run on its own — it
-upserts catalog rows and replaces only future inventory.
+upserts catalog rows, replaces future inventory, and recreates demo
+bookings/manifests.
 
 ### Seed horizon
 
 `SEED_DAYS=45` by default. Override per-run: `SEED_DAYS=90 npm run db:seed`.
 
+The seed baseline defaults to today's UTC date. Override it for a
+reproducible demo snapshot:
+
+```bash
+SEED_BASE_DATE=2026-06-01 SEED_DAYS=45 npm run db:seed
+```
+
 The seed generates ~4.8k flights and ~220k seat rows for 45 days against
 the full catalog (17 airports — LHR + SFO as hubs, CDG + AMS as
-secondary origins, 13 further destinations; 53 routes). Expect 30-60s
+secondary origins, 13 further destinations; 55 routes). Expect 30-60s
 on a healthy connection — the script batches per-day inserts so it
 doesn't paginate one row at a time.
+
+The seed also creates named demo bookings with stable PNRs such as
+`VIP001`, `BIZ001`, `FAM001`, `RBK001`, `RBKOLD`, and `HLD001`. These
+cover VIP, corporate, family, service-recovery/rebooked, cancelled, and
+awaiting-payment scenarios. Selected showcase cabins are normalized so
+seat maps, fares, manifests, and named passengers agree.
 
 ## Layout
 
@@ -65,7 +79,7 @@ src/routes/                     One file per resource (health, airports, routes,
 supabase/migrations/            Hand-written SQL — source of truth for the schema
 supabase/config.toml            Local Supabase CLI config (optional)
 scripts/migrate.ts              Apply SQL migrations; --reset drops the schema first
-scripts/seed.ts                 Upsert catalog + regenerate inventory
+scripts/seed.ts                 CLI wrapper for reusable seed pipeline
 scripts/wipe.ts                 Truncate every table without touching the schema
 tests/                          Vitest unit tests
 vercel.json                     Vercel rewrites + cron schedules
@@ -83,6 +97,8 @@ vercel.json                     Vercel rewrites + cron schedules
 | `GET` | `/v1/flights/calendar?from&to&month&cabin` | Month-grid of price-per-day |
 | `GET` | `/v1/flights/:id` | Detail incl. per-cabin fares |
 | `GET` | `/v1/flights/:id/seat-map?cabin=A` | Seat geometry + availability |
+| `GET` | `/v1/flights/:id/manifest` | Staff/agent passenger manifest for confirmed + held bookings |
+| `GET` | `/v1/flights/:id/briefing` | Aggregated VIP, service-recovery, and special-attention briefing |
 | `POST` | `/v1/bookings` | Create draft (returns PNR + 10-min hold window) |
 | `GET` | `/v1/bookings/:pnr` | Owner via session, or guest with `?email=` |
 | `POST` | `/v1/bookings/:pnr/contact` | Save lead-traveller contact |

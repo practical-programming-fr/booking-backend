@@ -2,7 +2,7 @@
 // intact. Useful when you want a clean slate but don't want to re-run
 // migrations. The seed script is then safe to run from scratch.
 //
-// Cascade order matters: payments/passengers/segments → bookings;
+// Cascade order matters: payments/passengers/events/segments -> bookings;
 // seat_holds → flight_seats → flight_fares → flights; then catalog
 // rows. Profiles aren't currently used by the v1 frontend but we wipe
 // them too for symmetry.
@@ -16,6 +16,7 @@ import { loadEnv } from "../src/env.js";
 const TABLES_IN_ORDER = [
   "payments",
   "passengers",
+  "booking_events",
   "booking_segments",
   "seat_holds",
   "bookings",
