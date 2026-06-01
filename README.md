@@ -121,7 +121,8 @@ bookings persist without auth.
 `POST /mcp` exposes the booking backend through the stable v1
 `@modelcontextprotocol/sdk` Streamable HTTP transport. The server runs in
 stateless JSON-response mode so each request can be handled by any Vercel
-Function instance.
+Function instance. Long-lived GET SSE sessions and stateful DELETE cleanup
+are not used by this deployment mode.
 
 The MCP tools mirror the `/v1` HTTP API:
 
@@ -134,11 +135,12 @@ The MCP tools mirror the `/v1` HTTP API:
   `confirm_booking`, `cancel_booking`, `list_my_trips`
 - maintenance: `release_expired_holds`
 
-Tools that operate on owned bookings accept `sessionId` and forward it as
-the configured booking session header. `get_booking` can instead use
-`email` for the same guest retrieval flow as `/v1/bookings/:pnr?email=...`.
-If `CRON_SECRET` is configured, `release_expired_holds` requires
-`cronSecret` and forwards it as a Bearer token.
+Tools that operate on owned bookings forward the same
+`x-booking-session: <uuid>` HTTP header sent to `/mcp`; the session UUID is
+not a tool argument. `get_booking` can instead use `email` for the same
+guest retrieval flow as `/v1/bookings/:pnr?email=...`. If `CRON_SECRET` is
+configured, call `release_expired_holds` with the matching
+`Authorization: Bearer <secret>` HTTP header on the `/mcp` request.
 
 ## Deployment
 

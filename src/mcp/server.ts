@@ -10,6 +10,13 @@ type BookingMcpServerOptions = {
   env: Pick<Env, "BOOKING_SESSION_HEADER">;
 };
 
+type RequestHeaders = Record<string, string | string[] | undefined>;
+type ToolRequestExtra = {
+  requestInfo?: {
+    headers: RequestHeaders;
+  };
+};
+
 const cabinSchema = z.enum(["A", "P", "L"]);
 const iataSchema = z.string().length(3).transform((value) => value.toUpperCase());
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
@@ -107,6 +114,35 @@ function sessionHeaders(
   sessionId: string,
 ): Record<string, string> {
   return { [env.BOOKING_SESSION_HEADER]: sessionId };
+}
+
+function getRequestHeader(extra: ToolRequestExtra, name: string): string | undefined {
+  const headers = extra.requestInfo?.headers;
+  if (!headers) {
+    return undefined;
+  }
+
+  const exact = headers[name] ?? headers[name.toLowerCase()];
+  if (exact) {
+    return Array.isArray(exact) ? exact[0] : exact;
+  }
+
+  const lowerName = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lowerName) {
+      return Array.isArray(value) ? value[0] : value;
+    }
+  }
+
+  return undefined;
+}
+
+function getSessionHeaders(
+  env: Pick<Env, "BOOKING_SESSION_HEADER">,
+  extra: ToolRequestExtra,
+): Record<string, string> | undefined {
+  const sessionId = getRequestHeader(extra, env.BOOKING_SESSION_HEADER);
+  return sessionId ? sessionHeaders(env, sessionId) : undefined;
 }
 
 async function callInternalApi(
@@ -253,18 +289,17 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Create booking",
       description: "Create a draft booking and 10-minute hold for the session.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         flightId: uuidSchema,
         cabin: cabinSchema,
         pax: z.number().int().min(1).max(9),
         contact: contactSchema.optional(),
       }),
     },
-    async ({ sessionId, flightId, cabin, pax, contact }) =>
+    async ({ flightId, cabin, pax, contact }, extra) =>
       callInternalApi(
         internalFetch,
         "/v1/bookings",
-        jsonPost({ flightId, cabin, pax, contact }, sessionHeaders(env, sessionId)),
+        jsonPost({ flightId, cabin, pax, contact }, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -275,16 +310,17 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       description: "Load a booking by PNR using the owner session or matching contact email.",
       inputSchema: z.object({
         pnr: pnrSchema,
-        sessionId: uuidSchema.optional(),
         email: z.string().email().optional(),
       }),
     },
-    async ({ pnr, sessionId, email }) =>
-      callInternalApi(
+    async ({ pnr, email }, extra) => {
+      const headers = getSessionHeaders(env, extra);
+      return callInternalApi(
         internalFetch,
         withQuery(`/v1/bookings/${pnr}`, { email }),
-        sessionId ? { headers: sessionHeaders(env, sessionId) } : undefined,
-      ),
+        headers ? { headers } : undefined,
+      );
+    },
   );
 
   server.registerTool(
@@ -293,16 +329,15 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Update booking contact",
       description: "Save lead-traveller contact details for an owned draft booking.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         pnr: pnrSchema,
         contact: contactSchema,
       }),
     },
-    async ({ sessionId, pnr, contact }) =>
+    async ({ pnr, contact }, extra) =>
       callInternalApi(
         internalFetch,
         `/v1/bookings/${pnr}/contact`,
-        jsonPost({ contact }, sessionHeaders(env, sessionId)),
+        jsonPost({ contact }, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -312,16 +347,15 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Update booking passengers",
       description: "Upsert passenger names and metadata for an owned booking.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         pnr: pnrSchema,
         passengers: z.array(passengerSchema).min(1).max(9),
       }),
     },
-    async ({ sessionId, pnr, passengers }) =>
+    async ({ pnr, passengers }, extra) =>
       callInternalApi(
         internalFetch,
         `/v1/bookings/${pnr}/passengers`,
-        jsonPost({ passengers }, sessionHeaders(env, sessionId)),
+        jsonPost({ passengers }, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -331,16 +365,15 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Assign booking seats",
       description: "Hold, change, or clear seat assignments for an owned booking.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         pnr: pnrSchema,
         assignments: z.array(seatAssignmentSchema).min(1).max(9),
       }),
     },
-    async ({ sessionId, pnr, assignments }) =>
+    async ({ pnr, assignments }, extra) =>
       callInternalApi(
         internalFetch,
         `/v1/bookings/${pnr}/seats`,
-        jsonPost({ assignments }, sessionHeaders(env, sessionId)),
+        jsonPost({ assignments }, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -350,16 +383,15 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Assign booking meals",
       description: "Assign meal choices for passengers on an owned booking.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         pnr: pnrSchema,
         assignments: z.array(mealAssignmentSchema).min(1).max(9),
       }),
     },
-    async ({ sessionId, pnr, assignments }) =>
+    async ({ pnr, assignments }, extra) =>
       callInternalApi(
         internalFetch,
         `/v1/bookings/${pnr}/meals`,
-        jsonPost({ assignments }, sessionHeaders(env, sessionId)),
+        jsonPost({ assignments }, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -369,15 +401,14 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Create payment intent",
       description: "Create a mock payment intent for an owned booking.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         pnr: pnrSchema,
       }),
     },
-    async ({ sessionId, pnr }) =>
+    async ({ pnr }, extra) =>
       callInternalApi(
         internalFetch,
         `/v1/bookings/${pnr}/payment-intent`,
-        jsonPost(undefined, sessionHeaders(env, sessionId)),
+        jsonPost(undefined, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -387,17 +418,16 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Confirm booking",
       description: "Confirm payment, convert held seats, and ticket the booking.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         pnr: pnrSchema,
         paymentId: uuidSchema,
         card: cardSchema,
       }),
     },
-    async ({ sessionId, pnr, paymentId, card }) =>
+    async ({ pnr, paymentId, card }, extra) =>
       callInternalApi(
         internalFetch,
         `/v1/bookings/${pnr}/confirm`,
-        jsonPost({ paymentId, card }, sessionHeaders(env, sessionId)),
+        jsonPost({ paymentId, card }, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -407,15 +437,14 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Cancel booking",
       description: "Cancel an owned booking and release/refund associated inventory.",
       inputSchema: z.object({
-        sessionId: uuidSchema,
         pnr: pnrSchema,
       }),
     },
-    async ({ sessionId, pnr }) =>
+    async ({ pnr }, extra) =>
       callInternalApi(
         internalFetch,
         `/v1/bookings/${pnr}/cancel`,
-        jsonPost(undefined, sessionHeaders(env, sessionId)),
+        jsonPost(undefined, getSessionHeaders(env, extra)),
       ),
   );
 
@@ -424,13 +453,11 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
     {
       title: "List my trips",
       description: "List up to 50 bookings owned by the provided browser session.",
-      inputSchema: z.object({
-        sessionId: uuidSchema,
-      }),
+      inputSchema: z.object({}),
     },
-    async ({ sessionId }) =>
+    async (_args, extra) =>
       callInternalApi(internalFetch, "/v1/me/trips", {
-        headers: sessionHeaders(env, sessionId),
+        headers: getSessionHeaders(env, extra),
       }),
   );
 
@@ -439,14 +466,11 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
     {
       title: "Release expired holds",
       description: "Run the same expired-hold sweep used by the scheduled cron endpoint.",
-      inputSchema: z.object({
-        cronSecret: z.string().min(1).optional(),
-      }),
+      inputSchema: z.object({}),
     },
-    async ({ cronSecret }) => {
-      const expected = process.env.CRON_SECRET;
-      const headers =
-        expected && cronSecret ? { Authorization: `Bearer ${cronSecret}` } : undefined;
+    async (_args, extra) => {
+      const authorization = getRequestHeader(extra, "authorization");
+      const headers = authorization ? { Authorization: authorization } : undefined;
       return callInternalApi(
         internalFetch,
         "/v1/_cron/release-expired-holds",
