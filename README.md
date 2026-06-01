@@ -4,7 +4,8 @@ A small Hono + TypeScript service on top of Supabase Postgres that powers
 the FlyLo booking flow. Designed to deploy as a single Vercel Function.
 
 See [`SPEC.md`](./SPEC.md) for the data model, endpoint inventory, and
-environment contract.
+environment contract. See [`docs/mcp.md`](./docs/mcp.md) for the MCP server
+tool inventory and usage guide.
 
 ## Quick start
 
@@ -110,10 +111,40 @@ vercel.json                     Vercel rewrites + cron schedules
 | `POST` | `/v1/bookings/:pnr/cancel` | Cancel + release seats / refund |
 | `GET` | `/v1/me/trips` | List bookings for this browser session |
 | `POST` / `GET` | `/v1/_cron/release-expired-holds` | Sweep expired holds; auth via `CRON_SECRET` |
+| `POST` | `/mcp` | MCP Streamable HTTP endpoint exposing the booking backend as tools |
 
 Every authenticated booking endpoint requires an `x-booking-session: <uuid>`
 header. The frontend keeps that UUID in `localStorage` per browser so
 bookings persist without auth.
+
+## MCP endpoint
+
+`POST /mcp` exposes the booking backend through the stable v1
+`@modelcontextprotocol/sdk` Streamable HTTP transport. The server runs in
+stateless JSON-response mode so each request can be handled by any Vercel
+Function instance. Long-lived GET SSE sessions and stateful DELETE cleanup
+are not used by this deployment mode.
+
+The MCP tools mirror the `/v1` HTTP API:
+
+- catalog and shopping: `list_airports`, `get_airport`, `list_routes`,
+  `search_flights`, `get_flight_calendar`, `get_flight`, `get_seat_map`,
+  `get_flight_manifest`, `get_flight_briefing`
+- booking lifecycle: `create_booking`, `get_booking`,
+  `update_booking_contact`, `update_booking_passengers`,
+  `assign_booking_seats`, `assign_booking_meals`, `create_payment_intent`,
+  `confirm_booking`, `cancel_booking`, `list_my_trips`
+- maintenance: `release_expired_holds`
+
+Tools that operate on owned bookings forward the same
+`x-booking-session: <uuid>` HTTP header sent to `/mcp`; the session UUID is
+not a tool argument. `get_booking` can instead use `email` for the same
+guest retrieval flow as `/v1/bookings/:pnr?email=...`. If `CRON_SECRET` is
+configured, call `release_expired_holds` with the matching
+`Authorization: Bearer <secret>` HTTP header on the `/mcp` request.
+
+For the full tool inventory, argument schemas, header requirements,
+JSON-RPC examples, and implementation map, see [`docs/mcp.md`](./docs/mcp.md).
 
 ## Deployment
 
