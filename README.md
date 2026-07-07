@@ -111,6 +111,7 @@ vercel.json                     Vercel rewrites + cron schedules
 | `POST` | `/v1/bookings/:pnr/cancel` | Cancel + release seats / refund |
 | `GET` | `/v1/me/trips` | List bookings for this browser session |
 | `POST` / `GET` | `/v1/_cron/release-expired-holds` | Sweep expired holds; auth via `CRON_SECRET` |
+| `GET`/`POST` | `/v1/_ops/*` | Ops runtime for the "3am outage" demo: flags, errors, incidents, reset; bearer `OPS_SHARED_SECRET` |
 | `POST` | `/mcp` | MCP Streamable HTTP endpoint exposing the booking backend as tools |
 
 Every authenticated booking endpoint requires an `x-booking-session: <uuid>`
@@ -145,6 +146,19 @@ configured, call `release_expired_holds` with the matching
 
 For the full tool inventory, argument schemas, header requirements,
 JSON-RPC examples, and implementation map, see [`docs/mcp.md`](./docs/mcp.md).
+
+## Ops runtime (the "3am outage" demo)
+
+The repo carries a deliberately seeded bug in
+`src/domain/fare-adjustment.ts`, dormant behind the `fare_adjustment_v2`
+ops flag. Flipping the flag on breaks the shared pricing path (search,
+flight detail, booking creation) with real 500s; flipping it off recovers
+instantly. State lives in the `ops_flags`, `ops_errors`, and
+`ops_incidents` tables, exposed via `/v1/_ops/*` (bearer
+`OPS_SHARED_SECRET`). The incident console that drives the demo lives in
+`booking-frontend` at `/ops`; `.github/workflows/demo-cleanup.yml` closes
+`demo`-labelled fix PRs and resets the runtime nightly. Full runbook:
+`flylo-air/docs` → `demo-3am-outage.md`.
 
 ## Deployment
 
