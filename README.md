@@ -3,6 +3,8 @@
 A small Hono + TypeScript service on top of Supabase Postgres that powers
 the FlyLo booking flow. Designed to deploy as a single Vercel Function.
 
+> Part of **FlyLo**. Get access and see all apps + scenarios at the FlyLo hub: https://flylo-provisioning.internalsphere.com (contributing: read `.cursor/rules/` in the flylo-provisioning repo).
+
 See [`SPEC.md`](./SPEC.md) for the data model, endpoint inventory, and
 environment contract. See [`docs/mcp.md`](./docs/mcp.md) for the MCP server
 tool inventory and usage guide.
