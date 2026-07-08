@@ -13,6 +13,7 @@ import {
 } from "../domain/booking.js";
 import { assignSeats } from "../domain/seats.js";
 import { confirmPayment, createPaymentIntent, cancelBooking } from "../domain/payments.js";
+import { setBookingPromo } from "../domain/promo.js";
 import { loadBooking } from "../domain/loader.js";
 
 const sessionIdSchema = z.string().uuid("x-booking-session must be a UUID");
@@ -75,6 +76,10 @@ const mealsSchema = z.object({
     )
     .min(1)
     .max(9),
+});
+
+const promoSchema = z.object({
+  code: z.string().max(40).nullable().optional(),
 });
 
 const confirmSchema = z.object({
@@ -263,6 +268,65 @@ export function bookingsRoutes(): Hono {
         return c.json({ error: { message: "Not your booking", status: 403 } }, 403);
       }
       await assignMeals(sql, pnr, c.req.valid("json").assignments);
+      const booking = await loadBooking(sql, pnr);
+      return c.json({ booking });
+    } catch (err) {
+      const mapped = handleDomainError(err);
+      if (mapped) return c.json(mapped.body, mapped.status as 400);
+      throw err;
+    }
+  });
+
+  // --- POST /v1/bookings/:pnr/promo ---------------------------------------
+  // Apply (or clear) a promo code. An empty/blank code clears any applied
+  // promo, so a mis-entered code can be removed without a separate call.
+  app.post("/:pnr/promo", zValidator("json", promoSchema), async (c) => {
+    const pnr = c.req.param("pnr").toUpperCase();
+    const sessionId = getSessionId(c);
+    if (!sessionId) {
+      return c.json({ error: { message: "Missing x-booking-session", status: 400 } }, 400);
+    }
+    try {
+      const sql = getSql();
+      const ownerRow = (await sql`
+        select session_id from public.bookings where pnr = ${pnr}
+      `) as unknown as Array<{ session_id: string }>;
+      if (ownerRow.length === 0) {
+        return c.json({ error: { message: "Booking not found", status: 404 } }, 404);
+      }
+      if (ownerRow[0]!.session_id !== sessionId) {
+        return c.json({ error: { message: "Not your booking", status: 403 } }, 403);
+      }
+      await setBookingPromo(sql, pnr, c.req.valid("json").code ?? null);
+      const booking = await loadBooking(sql, pnr);
+      return c.json({ booking });
+    } catch (err) {
+      const mapped = handleDomainError(err);
+      if (mapped) return c.json(mapped.body, mapped.status as 400);
+      throw err;
+    }
+  });
+
+  // --- DELETE /v1/bookings/:pnr/promo -------------------------------------
+  // Clear any applied promo and restore full price.
+  app.delete("/:pnr/promo", async (c) => {
+    const pnr = c.req.param("pnr").toUpperCase();
+    const sessionId = getSessionId(c);
+    if (!sessionId) {
+      return c.json({ error: { message: "Missing x-booking-session", status: 400 } }, 400);
+    }
+    try {
+      const sql = getSql();
+      const ownerRow = (await sql`
+        select session_id from public.bookings where pnr = ${pnr}
+      `) as unknown as Array<{ session_id: string }>;
+      if (ownerRow.length === 0) {
+        return c.json({ error: { message: "Booking not found", status: 404 } }, 404);
+      }
+      if (ownerRow[0]!.session_id !== sessionId) {
+        return c.json({ error: { message: "Not your booking", status: 403 } }, 403);
+      }
+      await setBookingPromo(sql, pnr, null);
       const booking = await loadBooking(sql, pnr);
       return c.json({ booking });
     } catch (err) {

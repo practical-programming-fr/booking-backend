@@ -31,6 +31,16 @@ const envSchema = z
       .optional()
       .default("x-booking-session"),
 
+    // Jira Cloud integration for the request_marketing_change MCP tool. All
+    // optional: when any are missing the tool degrades gracefully and reports
+    // that Jira is not configured, so local dev and the build work without
+    // credentials. Provide the secrets through the deployment platform; never
+    // commit them.
+    JIRA_BASE_URL: z.string().url().optional(),
+    JIRA_EMAIL: z.string().email().optional(),
+    JIRA_API_TOKEN: z.string().min(1).optional(),
+    JIRA_PROJECT_KEY: z.string().min(1).optional(),
+
     NODE_ENV: z.enum(["development", "test", "production"]).optional().default("development"),
   })
   .transform((value) => ({

@@ -119,6 +119,7 @@ describe("mcp route", () => {
     expect(toolNames).toContain("search_flights");
     expect(toolNames).toContain("create_booking");
     expect(toolNames).toContain("release_expired_holds");
+    expect(toolNames).toContain("request_marketing_change");
 
     const createBooking = body.result.tools.find((tool) => tool.name === "create_booking");
     expect(createBooking?.inputSchema?.properties).not.toHaveProperty("sessionId");
@@ -193,5 +194,21 @@ describe("mcp route", () => {
     });
     expect(calls[0]?.init?.body).toBeUndefined();
     expect(body).toMatchObject({ result: { structuredContent: { ok: true } } });
+  });
+
+  it("request_marketing_change degrades gracefully when Jira is not configured", async () => {
+    const { body } = await callToolWithFakeFetch("request_marketing_change", {
+      title: "Flash sale banner + FLASH20",
+      description: "Add a weekend flash-sale banner and a 20 percent off code.",
+      promoCode: "FLASH20",
+      discountPercent: 20,
+    });
+
+    expect(body).toMatchObject({
+      result: {
+        isError: true,
+        structuredContent: { configured: false },
+      },
+    });
   });
 });

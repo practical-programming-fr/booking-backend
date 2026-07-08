@@ -26,6 +26,8 @@ type BookingRow = {
   taxes_eur: number;
   surface_eur: number;
   total_eur: number;
+  promo_code: string | null;
+  discount_eur: number;
   hold_expires_at: Date | null;
   created_at: Date;
   updated_at: Date;
@@ -81,6 +83,7 @@ export async function loadBooking(
   const bookings = (await sql`
     select pnr, session_id, user_id, status, contact, currency, pax,
            base_eur, seats_eur, meals_eur, taxes_eur, surface_eur, total_eur,
+           promo_code, discount_eur,
            hold_expires_at, created_at, updated_at, confirmed_at, cancelled_at
     from public.bookings
     where pnr = ${pnr}
@@ -138,12 +141,14 @@ export async function loadBooking(
     contact: booking.contact ?? {},
     pax: booking.pax,
     currency: "EUR",
+    promoCode: booking.promo_code ?? null,
     totals: {
       baseEur: booking.base_eur,
       seatsEur: booking.seats_eur,
       mealsEur: booking.meals_eur,
       taxesEur: booking.taxes_eur,
       surfaceEur: booking.surface_eur,
+      discountEur: booking.discount_eur,
       totalEur: booking.total_eur,
     },
     holdExpiresAt: booking.hold_expires_at?.toISOString() ?? null,

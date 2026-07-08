@@ -9,6 +9,7 @@ export type BookingTotals = {
   mealsEur: number;
   taxesEur: number;
   surfaceEur: number;
+  discountEur: number;
   totalEur: number;
 };
 
@@ -59,6 +60,7 @@ export type BookingView = {
   contact: ContactDetails;
   pax: number;
   currency: "EUR";
+  promoCode: string | null;
   totals: BookingTotals;
   holdExpiresAt: string | null;
   createdAt: string;

@@ -40,6 +40,15 @@ All read from `process.env`; see `.env.example`.
 | `BOOKING_SESSION_HEADER` | header name for browser session id (default `x-booking-session`) |
 | `BOOKING_ALLOWED_ORIGINS` | comma-separated CORS allowlist |
 | `PORT` | local dev server port (default `8787`) |
+| `JIRA_BASE_URL` | optional; Jira Cloud site URL for `request_marketing_change` |
+| `JIRA_EMAIL` | optional; Atlassian account email (Basic auth) |
+| `JIRA_API_TOKEN` | optional; Atlassian API token (Basic auth), secret |
+| `JIRA_PROJECT_KEY` | optional; project key marketing tickets are filed into |
+
+The `JIRA_*` vars are all optional. The `request_marketing_change` MCP tool
+uses them to file a Jira ticket; when any is unset the tool degrades
+gracefully and reports that Jira is not configured. Provide them as platform
+secrets; never commit them.
 
 ## Data model
 
@@ -58,7 +67,7 @@ of truth. Summary:
 | `flight_fares` | Per-flight × cabin pricing + remaining availability |
 | `flight_seats` | One row per seat on each flight with status |
 | `seat_holds` | 10-minute soft locks tied to a browser session |
-| `bookings` | The PNR / order, linked to a session and (optionally) a user |
+| `bookings` | The PNR / order, linked to a session and (optionally) a user; carries `promo_code` + `discount_eur` for the applied promo |
 | `booking_segments` | Legs of a booking (v1: always one) |
 | `passengers` | Travelers on a booking + assigned seat, meal, loyalty tier, and service tags |
 | `payments` | Mock charge records |
@@ -81,6 +90,8 @@ of truth. Summary:
 | `POST` | `/v1/bookings/:pnr/passengers` | upsert passenger list |
 | `POST` | `/v1/bookings/:pnr/seats` | hold seats |
 | `POST` | `/v1/bookings/:pnr/meals` | assign meals |
+| `POST` | `/v1/bookings/:pnr/promo` | apply or clear a promo code; recomputes totals |
+| `DELETE` | `/v1/bookings/:pnr/promo` | clear an applied promo, restore full price |
 | `POST` | `/v1/bookings/:pnr/payment-intent` | mock provider |
 | `POST` | `/v1/bookings/:pnr/confirm` | issue tickets, release holds |
 | `GET` | `/v1/bookings/:pnr` | guest retrieval — requires `?email=…` or session header |

@@ -149,6 +149,8 @@ export const bookings = pgTable("bookings", {
   taxesEur: integer("taxes_eur").notNull().default(0),
   surfaceEur: integer("surface_eur").notNull().default(0),
   totalEur: integer("total_eur").notNull().default(0),
+  promoCode: text("promo_code"),
+  discountEur: integer("discount_eur").notNull().default(0),
   holdExpiresAt: timestamp("hold_expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

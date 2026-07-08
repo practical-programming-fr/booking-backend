@@ -2,12 +2,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Env } from "../env.js";
+import { createMarketingIssue } from "../lib/jira.js";
 
 export type InternalFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
 type BookingMcpServerOptions = {
   internalFetch: InternalFetch;
-  env: Pick<Env, "BOOKING_SESSION_HEADER">;
+  env: Pick<
+    Env,
+    | "BOOKING_SESSION_HEADER"
+    | "JIRA_BASE_URL"
+    | "JIRA_EMAIL"
+    | "JIRA_API_TOKEN"
+    | "JIRA_PROJECT_KEY"
+  >;
 };
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
@@ -476,6 +484,30 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         "/v1/_cron/release-expired-holds",
         jsonPost(undefined, headers),
       );
+    },
+  );
+
+  server.registerTool(
+    "request_marketing_change",
+    {
+      title: "Request marketing change",
+      description:
+        "File a marketing-change request (for example a flash-sale banner and a " +
+        "percent-off promo code) as a Jira ticket. Returns the created issue key " +
+        "and browse URL, or a clear result when Jira is not configured.",
+      inputSchema: z.object({
+        title: z.string().min(1).max(240),
+        description: z.string().min(1).max(4000),
+        promoCode: z.string().max(40).optional(),
+        discountPercent: z.number().optional(),
+        startsAt: z.string().optional(),
+        endsAt: z.string().optional(),
+      }),
+    },
+    async (input) => {
+      const result = await createMarketingIssue(input, env);
+      const isError = !result.configured || Boolean(result.error);
+      return jsonToolResult(result, isError);
     },
   );
 

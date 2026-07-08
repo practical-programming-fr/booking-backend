@@ -68,6 +68,10 @@ JSON in both MCP content forms:
 If the internal `/v1` response is non-2xx, the MCP tool result has
 `isError: true` and preserves the backend error body.
 
+`request_marketing_change` is the one tool that does not call an internal
+`/v1` endpoint; it talks to Jira Cloud directly (see the Marketing section
+below) but returns the same `structuredContent` + text shape.
+
 ## Tool inventory
 
 ### Catalog and shopping
@@ -112,6 +116,30 @@ These tools require the `x-booking-session` HTTP header unless noted.
 
 If `CRON_SECRET` is configured, call this tool with the MCP HTTP
 `Authorization: Bearer <CRON_SECRET>` header.
+
+### Marketing
+
+| Tool | Required arguments | Optional arguments | Backend |
+|---|---|---|---|
+| `request_marketing_change` | `title`, `description` | `promoCode`, `discountPercent`, `startsAt`, `endsAt` | Jira Cloud REST API |
+
+`request_marketing_change` files a marketing-request ticket into Jira. It
+does not call an internal `/v1` endpoint; instead it uses the Jira client in
+`src/lib/jira.ts`. Jira Cloud requires the issue description in Atlassian
+Document Format (ADF), so the tool builds a minimal ADF document from the
+`description` plus any supplied promo details and POSTs to
+`{JIRA_BASE_URL}/rest/api/3/issue` with a Basic auth header.
+
+On success the tool result includes `configured: true`, the created issue
+`key`, and a `url` of the form `{JIRA_BASE_URL}/browse/{key}`. When Jira is
+not fully configured the tool does not throw: it returns `configured: false`
+with an explanatory `error` and `isError: true`, so local dev and the build
+work without credentials.
+
+The tool reads four optional env vars: `JIRA_BASE_URL`, `JIRA_EMAIL`,
+`JIRA_API_TOKEN`, and `JIRA_PROJECT_KEY`. All are optional; when any is
+unset the tool reports that Jira is not configured. Provide them as platform
+secrets; never commit them. See `.env.example` and `SPEC.md`.
 
 ## Argument reference
 
@@ -276,12 +304,38 @@ curl -sS http://localhost:8787/mcp \
   }'
 ```
 
+### Request a marketing change
+
+```bash
+curl -sS http://localhost:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "tools/call",
+    "params": {
+      "name": "request_marketing_change",
+      "arguments": {
+        "title": "Flash-sale banner + FLASH20",
+        "description": "Add a weekend flash-sale banner and a 20 percent off code.",
+        "promoCode": "FLASH20",
+        "discountPercent": 20,
+        "startsAt": "2026-07-11",
+        "endsAt": "2026-07-13"
+      }
+    }
+  }'
+```
+
 ## Implementation map
 
 - Route mount: `src/app.ts`
 - MCP HTTP route: `src/routes/mcp.ts`
 - Tool registration and internal `/v1` forwarding: `src/mcp/server.ts`
+- Jira client for `request_marketing_change`: `src/lib/jira.ts`
 - Route/tool-call tests: `tests/mcp-routes.test.ts`
+- Jira client tests: `tests/jira.test.ts`
 - Existing backend API routes: `src/routes/*.ts`
 
 When adding or changing `/v1` capabilities, keep `src/mcp/server.ts`, this
@@ -303,3 +357,7 @@ The MCP tests cover:
 - transport header validation.
 - tool-call forwarding of `x-booking-session`.
 - tool-call forwarding of `Authorization` for the maintenance sweep.
+- `request_marketing_change` graceful degradation when Jira is not
+  configured. The Jira client itself (ADF body shape, Basic auth header, and
+  the not-configured path) is unit-tested with `fetch` mocked in
+  `tests/jira.test.ts`.

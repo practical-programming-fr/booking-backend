@@ -46,6 +46,20 @@ describe("booking routes", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(res.status).toBeLessThan(500);
   });
+
+  it("rejects POST /v1/bookings/:pnr/promo without a session header", async () => {
+    stubEnv();
+    const { buildApp } = await import("../src/app.js");
+    const app = buildApp();
+    const res = await app.request("/v1/bookings/ABC123/promo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "FLASH20" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/session/i);
+  });
 });
 
 describe("me routes", () => {

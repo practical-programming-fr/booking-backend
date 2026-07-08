@@ -108,6 +108,8 @@ vercel.json                     Vercel rewrites + cron schedules
 | `POST` | `/v1/bookings/:pnr/passengers` | Upsert passenger list |
 | `POST` | `/v1/bookings/:pnr/seats` | Hold or clear seat assignments |
 | `POST` | `/v1/bookings/:pnr/meals` | Assign dining plans |
+| `POST` | `/v1/bookings/:pnr/promo` | Apply (or clear) a promo code; recomputes totals |
+| `DELETE` | `/v1/bookings/:pnr/promo` | Clear an applied promo and restore full price |
 | `POST` | `/v1/bookings/:pnr/payment-intent` | Mock payment intent + status flip |
 | `POST` | `/v1/bookings/:pnr/confirm` | Pay → ticket → status=confirmed |
 | `POST` | `/v1/bookings/:pnr/cancel` | Cancel + release seats / refund |
@@ -119,6 +121,44 @@ vercel.json                     Vercel rewrites + cron schedules
 Every authenticated booking endpoint requires an `x-booking-session: <uuid>`
 header. The frontend keeps that UUID in `localStorage` per browser so
 bookings persist without auth.
+
+## Promo codes and discounts
+
+The backend supports a simple, config-driven promo capability. Known codes
+and their percentage off live in a `PROMO_CODES` map in
+`src/domain/promo.ts` (for example `FLASH20` is 20 percent off, plus
+`WELCOME10` and `SUMMER15`). There is no admin CRUD; adding a code is a
+code change.
+
+How a discount is computed (see `recomputeBookingTotals` in
+`src/domain/totals.ts`):
+
+- The discount applies to the fare components only: base + seats + meals +
+  surface. Taxes are never discounted.
+- `discountEur = round(percentOff / 100 * (base + seats + meals + surface))`,
+  clamped so it can never exceed those components (which keeps the
+  post-discount total at or above the tax floor, and never below zero).
+- `totalEur = preDiscountTotal - discountEur`, where the pre-discount total
+  is base + seats + meals + taxes + surface.
+- With no promo, `discountEur` is `0` and the total matches the pre-discount
+  sum, so non-promo bookings behave exactly as before.
+
+Schema: `public.bookings` carries a nullable `promo_code text` and
+`discount_eur int not null default 0` (migration
+`supabase/migrations/20260708040000_booking_promo_code.sql`). Existing rows
+default to no discount, so the migration is backward compatible.
+
+Endpoints:
+
+- `POST /v1/bookings/:pnr/promo` with body `{ "code": "FLASH20" }` validates
+  the code (a `422 promo_invalid` error for unknown codes), sets it on the
+  booking, recomputes totals, and returns the updated booking. Sending an
+  empty/blank code clears any applied promo.
+- `DELETE /v1/bookings/:pnr/promo` clears the promo and restores full price.
+
+Both are session-owned like the other booking mutations. The booking GET
+response exposes the applied code as `promoCode` and the amount as
+`totals.discountEur`, so the frontend can render the discount line.
 
 ## MCP endpoint
 
@@ -138,6 +178,8 @@ The MCP tools mirror the `/v1` HTTP API:
   `assign_booking_seats`, `assign_booking_meals`, `create_payment_intent`,
   `confirm_booking`, `cancel_booking`, `list_my_trips`
 - maintenance: `release_expired_holds`
+- marketing: `request_marketing_change` (files a marketing-request ticket
+  into Jira; see below)
 
 Tools that operate on owned bookings forward the same
 `x-booking-session: <uuid>` HTTP header sent to `/mcp`; the session UUID is
@@ -148,6 +190,36 @@ configured, call `release_expired_holds` with the matching
 
 For the full tool inventory, argument schemas, header requirements,
 JSON-RPC examples, and implementation map, see [`docs/mcp.md`](./docs/mcp.md).
+
+### `request_marketing_change` (files a Jira ticket)
+
+The `request_marketing_change` MCP tool lets an agent or PM describe a
+requested marketing change (for example "flash-sale banner plus 20 percent
+off code FLASH20 for the weekend") and files it as a Jira issue. Input
+schema: `title` (required), `description` (required), and optional
+`promoCode`, `discountPercent`, `startsAt`, and `endsAt` (ISO date strings).
+On success the tool returns the created issue `key` and a `browse` URL.
+
+The Jira client lives in `src/lib/jira.ts`. Jira Cloud requires the issue
+description in Atlassian Document Format (ADF), so the client builds a
+minimal ADF document from the description plus any promo details and POSTs
+to `{JIRA_BASE_URL}/rest/api/3/issue` with a Basic auth header.
+
+The tool is gated on four optional env vars, all documented in
+`.env.example`:
+
+| Var | Purpose |
+|---|---|
+| `JIRA_BASE_URL` | Jira Cloud site base URL, e.g. `https://your-org.atlassian.net` |
+| `JIRA_EMAIL` | Atlassian account email for Basic auth |
+| `JIRA_API_TOKEN` | Atlassian API token for Basic auth |
+| `JIRA_PROJECT_KEY` | Project key the marketing ticket is filed into |
+
+All four are optional. When they are all set the tool calls Jira; when any
+is unset the tool does not throw and instead returns a structured result
+explaining that Jira is not configured, so local dev and the build work
+without credentials. Provide the values as platform secrets (Vercel project
+env / Cloud Agent secrets); never commit them.
 
 ## Ops runtime (the "3am outage" demo)
 

@@ -4,6 +4,7 @@
 
 import type postgres from "postgres";
 import type { BookingTotals } from "./types.js";
+import { computePromoDiscountEur, lookupPromo } from "./promo.js";
 
 export async function recomputeBookingTotals(
   sql: postgres.Sql,
@@ -24,12 +25,13 @@ export async function recomputeBookingTotals(
   }>;
 
   const bookingRow = (await sql`
-    select pax from public.bookings where pnr = ${pnr}
-  `) as unknown as Array<{ pax: number }>;
+    select pax, promo_code from public.bookings where pnr = ${pnr}
+  `) as unknown as Array<{ pax: number; promo_code: string | null }>;
   if (bookingRow.length === 0) {
     throw new Error(`Booking ${pnr} not found`);
   }
   const pax = bookingRow[0]!.pax;
+  const promoCode = bookingRow[0]!.promo_code;
 
   const baseEur =
     fareRows.reduce((sum, row) => sum + row.base_eur, 0) * pax;
@@ -63,7 +65,22 @@ export async function recomputeBookingTotals(
   `) as unknown as Array<{ meals_eur: number }>;
   const mealsEur = mealSumRows[0]?.meals_eur ?? 0;
 
-  const totalEur = baseEur + seatsEur + mealsEur + taxesEur + surfaceEur;
+  const preDiscountTotal = baseEur + seatsEur + mealsEur + taxesEur + surfaceEur;
+
+  // Apply a promo discount to the fare components only (never taxes). With no
+  // promo the discount is 0 and the total matches the pre-discount sum, so
+  // non-promo bookings behave exactly as before.
+  const promo = lookupPromo(promoCode);
+  const discountEur = promo
+    ? computePromoDiscountEur({
+        percentOff: promo.percentOff,
+        baseEur,
+        seatsEur,
+        mealsEur,
+        surfaceEur,
+      })
+    : 0;
+  const totalEur = preDiscountTotal - discountEur;
 
   await sql`
     update public.bookings
@@ -72,9 +89,18 @@ export async function recomputeBookingTotals(
         meals_eur = ${mealsEur},
         taxes_eur = ${taxesEur},
         surface_eur = ${surfaceEur},
+        discount_eur = ${discountEur},
         total_eur = ${totalEur}
     where pnr = ${pnr}
   `;
 
-  return { baseEur, seatsEur, mealsEur, taxesEur, surfaceEur, totalEur };
+  return {
+    baseEur,
+    seatsEur,
+    mealsEur,
+    taxesEur,
+    surfaceEur,
+    discountEur,
+    totalEur,
+  };
 }
