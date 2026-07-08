@@ -162,6 +162,17 @@ instantly. State lives in the `ops_flags`, `ops_errors`, and
 `demo`-labelled fix PRs and resets the runtime nightly. Full runbook:
 `flylo-air/docs` → `demo-3am-outage.md`.
 
+A second, benign scenario rides alongside the outage: a simulated traffic
+spike behind the `traffic_spike_sim` ops flag. It is purely informational and
+is never read on any request or pricing path, so enabling it keeps the booking
+site fully healthy (no 5xx, all probes green). Incidents carry a `kind` column
+(`outage` or `spike`, default `outage`) so consumers can tell a benign spike
+from a real outage. The follow-up frontend orchestrator, on seeing the flag
+enabled with no open incident, opens a `spike` incident, posts a benign alert,
+and after a short TTL flips the flag off, resolves the incident, and posts a
+benign recovery note, with no summarizer/fixer agents and no PR. `resetOps`
+turns both scenario flags off and closes open incidents of any kind.
+
 ## Deployment
 
 This service is intended to deploy as a single Vercel Function:

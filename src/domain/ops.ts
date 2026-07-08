@@ -11,6 +11,13 @@ import type postgres from "postgres";
 
 export const FARE_ADJUSTMENT_FLAG = "fare_adjustment_v2";
 
+// Benign, self-healing scenario flag. Unlike FARE_ADJUSTMENT_FLAG (which
+// breaks the pricing path and produces real 5xx), this one is purely
+// informational: it is never read on any request or pricing path, only by the
+// ops layer, so enabling it keeps the booking site fully healthy. It exists to
+// demo detection plus automatic self-recovery with no code fix and no PR.
+export const TRAFFIC_SPIKE_FLAG = "traffic_spike_sim";
+
 export type OpsFlag = {
   key: string;
   enabled: boolean;
@@ -38,6 +45,10 @@ export type IncidentEvent = {
 export type OpsIncident = {
   id: string;
   status: string;
+  // 'outage' for a real, code-fix-worthy incident, 'spike' for a benign,
+  // self-healing scenario. Defaults to 'outage' so existing incidents and the
+  // outage flow are unchanged.
+  kind: string;
   title: string;
   startedAt: string;
   resolvedAt: string | null;
@@ -168,6 +179,8 @@ function mapIncident(row: Record<string, unknown>): OpsIncident {
   return {
     id: row.id as string,
     status: row.status as string,
+    // Fail safe to 'outage' if the kind column is missing (pre-migration).
+    kind: (row.kind as string | null) ?? "outage",
     title: row.title as string,
     startedAt: (row.started_at as Date).toISOString(),
     resolvedAt: row.resolved_at ? (row.resolved_at as Date).toISOString() : null,
@@ -219,12 +232,13 @@ export async function listIncidents(
 
 export async function createIncident(
   sql: postgres.Sql,
-  input: { title?: string; event: IncidentEvent },
+  input: { title?: string; kind?: string; event: IncidentEvent },
 ): Promise<OpsIncident> {
   const rows = (await sql`
-    insert into public.ops_incidents (title, events)
+    insert into public.ops_incidents (title, kind, events)
     values (
       ${input.title ?? "Booking API incident"},
+      ${input.kind ?? "outage"},
       ${sql.json([input.event] as unknown as postgres.JSONValue)}
     )
     returning *
@@ -283,11 +297,13 @@ export async function updateIncident(
   `;
 }
 
-// Reset for the demo: turn the outage flag off, clear the error log, and
-// close any open incidents. Called by the /v1/_ops/reset route (which the
+// Reset for the demo: turn both scenario flags off (the fare_adjustment_v2
+// outage and the benign traffic_spike_sim), clear the error log, and close any
+// open incidents of any kind. Called by the /v1/_ops/reset route (which the
 // nightly reset workflow also hits) and the dashboard "disable flag" hatch.
 export async function resetOps(sql: postgres.Sql): Promise<void> {
   await setFlag(sql, FARE_ADJUSTMENT_FLAG, false);
+  await setFlag(sql, TRAFFIC_SPIKE_FLAG, false);
   await sql`truncate table public.ops_errors restart identity`;
   await sql`
     update public.ops_incidents

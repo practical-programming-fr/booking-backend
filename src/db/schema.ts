@@ -224,6 +224,7 @@ export const opsErrors = pgTable("ops_errors", {
 export const opsIncidents = pgTable("ops_incidents", {
   id: uuid("id").primaryKey().defaultRandom(),
   status: text("status").notNull().default("open"),
+  kind: text("kind").notNull().default("outage"),
   title: text("title").notNull().default("Booking API incident"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
