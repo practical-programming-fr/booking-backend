@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import { getSql } from "../db/client.js";
 
+// Captured at module load (build / cold start) so the value is baked into the
+// serverless bundle. VERCEL_GIT_COMMIT_SHA is a full 40-char SHA that is most
+// reliable at build time and may be unset inside the request handler.
+const COMMIT_SHA =
+  process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.COMMIT_SHA ?? null;
+
 export function healthRoutes(): Hono {
   const app = new Hono();
 
@@ -18,6 +24,7 @@ export function healthRoutes(): Hono {
     return c.json({
       status: dbOk ? "ok" : "degraded",
       service: "flylo-booking-backend",
+      commit: COMMIT_SHA,
       time: new Date().toISOString(),
       db: dbOk ? { status: "ok" } : { status: "error", error: dbError },
     });
