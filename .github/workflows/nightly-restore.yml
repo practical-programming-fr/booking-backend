@@ -169,6 +169,8 @@ jobs:
 
       - name: Migrate and reseed
         if: success() && env.armed == 'true'
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
         run: |
           set -euo pipefail
           if [ -z "${SUPABASE_DB_URL:-}" ]; then
