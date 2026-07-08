@@ -201,3 +201,39 @@ export const payments = pgTable("payments", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 });
+
+// --- Ops incident console (demo/incident-response tables) --------------------
+
+export const opsFlags = pgTable("ops_flags", {
+  key: text("key").primaryKey(),
+  enabled: boolean("enabled").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: text("updated_by"),
+});
+
+export const opsErrors = pgTable("ops_errors", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  method: text("method").notNull(),
+  path: text("path").notNull(),
+  status: integer("status").notNull(),
+  message: text("message").notNull(),
+  stack: text("stack"),
+});
+
+export const opsIncidents = pgTable("ops_incidents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  status: text("status").notNull().default("open"),
+  title: text("title").notNull().default("Booking API incident"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  events: jsonb("events").notNull().default(sql`'[]'::jsonb`),
+  summarizerAgentId: text("summarizer_agent_id"),
+  fixerAgentId: text("fixer_agent_id"),
+  summaryPosted: boolean("summary_posted").notNull().default(false),
+  prUrl: text("pr_url"),
+  prNumber: integer("pr_number"),
+  prPosted: boolean("pr_posted").notNull().default(false),
+  greenTicks: integer("green_ticks").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

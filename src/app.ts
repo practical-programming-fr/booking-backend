@@ -3,6 +3,8 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
 import { loadEnv } from "./env.js";
+import { getSql } from "./db/client.js";
+import { logOpsError } from "./domain/ops.js";
 import { healthRoutes } from "./routes/health.js";
 import { airportsRoutes } from "./routes/airports.js";
 import { routesRoutes } from "./routes/routes.js";
@@ -10,6 +12,7 @@ import { flightsRoutes } from "./routes/flights.js";
 import { bookingsRoutes } from "./routes/bookings.js";
 import { meRoutes } from "./routes/me.js";
 import { cronRoutes } from "./routes/cron.js";
+import { opsRoutes } from "./routes/ops.js";
 import { mcpRoutes } from "./routes/mcp.js";
 
 export function buildApp(): Hono {
@@ -38,9 +41,21 @@ export function buildApp(): Hono {
     }),
   );
 
-  app.onError((err, c) => {
+  app.onError(async (err, c) => {
     console.error("[booking-backend]", err);
     const status = (err as { status?: number }).status ?? 500;
+    // Record server-side failures so the ops console and incident agents see
+    // real error payloads (message + stack). Best effort; never blocks the
+    // response and never masks the original error.
+    if (status >= 500) {
+      await logOpsError(getSql(), {
+        method: c.req.method,
+        path: c.req.path,
+        status,
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack ?? null : null,
+      });
+    }
     return c.json(
       {
         error: {
@@ -64,6 +79,7 @@ export function buildApp(): Hono {
   v1.route("/bookings", bookingsRoutes());
   v1.route("/me", meRoutes());
   v1.route("/_cron", cronRoutes());
+  v1.route("/_ops", opsRoutes());
 
   app.route("/v1", v1);
   app.route("/mcp", mcpRoutes({

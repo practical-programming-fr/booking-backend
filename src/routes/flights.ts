@@ -14,6 +14,8 @@ import {
   seatMapTemplates,
 } from "../db/schema.js";
 import { loadFlightBriefing, loadFlightManifest } from "../domain/manifest.js";
+import { fareAdjustmentEnabled } from "../domain/ops.js";
+import { fuelSurchargeEur } from "../domain/fare-adjustment.js";
 
 const isoDate = z
   .string()
@@ -74,6 +76,7 @@ export function flightsRoutes(): Hono {
     }
 
     const route = matchingRoutes[0]!;
+    const surchargeOn = await fareAdjustmentEnabled(getSql());
 
     const rows = await db
       .select({
@@ -134,12 +137,22 @@ export function flightsRoutes(): Hono {
         arriveAt: flight.arriveAt.toISOString(),
         durationMin: flight.durationMin,
         status: flight.status,
-        fares: sortedFares.map((fare) => ({
-          cabin: fare.cabin,
-          baseEur: fare.baseEur,
-          totalForPaxEur: fare.baseEur * pax,
-          seatsAvailable: fare.seatsAvailable,
-        })),
+        fares: sortedFares.map((fare) => {
+          const surcharge = surchargeOn
+            ? fuelSurchargeEur({
+                origin: route.fromIata,
+                destination: route.toIata,
+                baseEur: fare.baseEur,
+                pax,
+              })
+            : 0;
+          return {
+            cabin: fare.cabin,
+            baseEur: fare.baseEur,
+            totalForPaxEur: fare.baseEur * pax + surcharge,
+            seatsAvailable: fare.seatsAvailable,
+          };
+        }),
         cheapestFromEur: cheapestFare?.baseEur ?? null,
       };
     });
@@ -288,6 +301,8 @@ export function flightsRoutes(): Hono {
       .where(eq(flightFares.flightId, id))
       .orderBy(asc(cabins.sortOrder));
 
+    const surchargeOn = await fareAdjustmentEnabled(getSql());
+
     return c.json({
       flight: {
         id: row.flight.id,
@@ -310,17 +325,28 @@ export function flightsRoutes(): Hono {
           haul: row.route.haul,
           freqPerWeek: row.route.freqPerWeek,
         },
-        fares: fareRows.map(({ fare, cabin }) => ({
-          cabin: cabin.code,
-          cabinName: cabin.name,
-          deck: cabin.deck,
-          dining: cabin.dining,
-          baseEur: fare.baseEur,
-          taxesEur: fare.taxesEur,
-          surfaceEur: fare.surfaceEur,
-          seatsTotal: fare.seatsTotal,
-          seatsAvailable: fare.seatsAvailable,
-        })),
+        fares: fareRows.map(({ fare, cabin }) => {
+          const surchargeEur = surchargeOn
+            ? fuelSurchargeEur({
+                origin: row.fromAirport.iata,
+                destination: row.toAirport.iata,
+                baseEur: fare.baseEur,
+                pax: 1,
+              })
+            : 0;
+          return {
+            cabin: cabin.code,
+            cabinName: cabin.name,
+            deck: cabin.deck,
+            dining: cabin.dining,
+            baseEur: fare.baseEur,
+            taxesEur: fare.taxesEur,
+            surfaceEur: fare.surfaceEur,
+            fuelSurchargeEur: surchargeEur,
+            seatsTotal: fare.seatsTotal,
+            seatsAvailable: fare.seatsAvailable,
+          };
+        }),
       },
     });
   });

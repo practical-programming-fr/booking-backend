@@ -5,6 +5,8 @@
 import type postgres from "postgres";
 import { generatePnr } from "../lib/pnr.js";
 import { recomputeBookingTotals } from "./totals.js";
+import { fareAdjustmentEnabled } from "./ops.js";
+import { fuelSurchargeEur } from "./fare-adjustment.js";
 import type { CabinCode, ContactDetails } from "./types.js";
 
 export const HOLD_MINUTES = 10;
@@ -70,12 +72,14 @@ export async function createDraftBooking(
   sql: postgres.Sql,
   input: CreateDraftInput,
 ): Promise<CreateDraftResult> {
+  const surchargeOn = await fareAdjustmentEnabled(sql);
   return sql.begin(async (tx) => {
     const fareRows = (await tx`
       select ff.flight_id, ff.cabin, ff.base_eur, ff.taxes_eur, ff.surface_eur,
-             ff.seats_available, f.depart_at
+             ff.seats_available, f.depart_at, r.from_iata, r.to_iata
       from public.flight_fares ff
       join public.flights f on f.id = ff.flight_id
+      join public.routes r on r.id = f.route_id
       where ff.flight_id = ${input.flightId}
         and ff.cabin = ${input.cabin}
       for update of ff
@@ -87,6 +91,8 @@ export async function createDraftBooking(
       surface_eur: number;
       seats_available: number;
       depart_at: Date;
+      from_iata: string;
+      to_iata: string;
     }>;
     if (fareRows.length === 0) {
       throw new DomainError(
@@ -119,7 +125,15 @@ export async function createDraftBooking(
       (fare.taxes_eur > 0 ? fare.taxes_eur : Math.round(fare.base_eur * 0.14)) *
       input.pax;
     const surfaceEur = fare.surface_eur * input.pax;
-    const totalEur = baseEur + taxesEur + surfaceEur;
+    const fuelEur = surchargeOn
+      ? fuelSurchargeEur({
+          origin: fare.from_iata,
+          destination: fare.to_iata,
+          baseEur: fare.base_eur,
+          pax: input.pax,
+        })
+      : 0;
+    const totalEur = baseEur + taxesEur + surfaceEur + fuelEur;
 
     await tx`
       insert into public.bookings (
