@@ -5,7 +5,7 @@
 import type postgres from "postgres";
 import { generatePnr } from "../lib/pnr.js";
 import { recomputeBookingTotals } from "./totals.js";
-import { fareAdjustmentEnabled } from "./ops.js";
+import { isOutageActiveForRequest } from "./ops.js";
 import { fuelSurchargeEur } from "./fare-adjustment.js";
 import type { CabinCode, ContactDetails } from "./types.js";
 
@@ -30,6 +30,10 @@ export type CreateDraftInput = {
   pax: number;
   sessionId: string;
   contact?: ContactDetails;
+  // Optional scoped-outage session id forwarded from the request (the
+  // DEMO_SESSION_HEADER). When it identifies an active scoped session the
+  // pricing path breaks for this booking only, leaving other callers healthy.
+  demoSessionId?: string;
 };
 
 export type CreateDraftResult = {
@@ -72,7 +76,7 @@ export async function createDraftBooking(
   sql: postgres.Sql,
   input: CreateDraftInput,
 ): Promise<CreateDraftResult> {
-  const surchargeOn = await fareAdjustmentEnabled(sql);
+  const surchargeOn = await isOutageActiveForRequest(sql, input.demoSessionId);
   return sql.begin(async (tx) => {
     const fareRows = (await tx`
       select ff.flight_id, ff.cabin, ff.base_eur, ff.taxes_eur, ff.surface_eur,

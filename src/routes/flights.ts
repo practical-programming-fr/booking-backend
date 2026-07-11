@@ -14,8 +14,18 @@ import {
   seatMapTemplates,
 } from "../db/schema.js";
 import { loadFlightBriefing, loadFlightManifest } from "../domain/manifest.js";
-import { fareAdjustmentEnabled } from "../domain/ops.js";
+import { isOutageActiveForRequest } from "../domain/ops.js";
 import { fuelSurchargeEur } from "../domain/fare-adjustment.js";
+import { loadEnv } from "../env.js";
+
+// The scoped-outage session id forwarded in the demo-session header (if any),
+// matched against active scoped sessions by the request-aware outage guard.
+function demoSessionIdFrom(c: {
+  req: { header: (name: string) => string | undefined };
+}): string | undefined {
+  const raw = c.req.header(loadEnv().DEMO_SESSION_HEADER.toLowerCase());
+  return raw && raw.length > 0 ? raw : undefined;
+}
 
 const isoDate = z
   .string()
@@ -76,7 +86,7 @@ export function flightsRoutes(): Hono {
     }
 
     const route = matchingRoutes[0]!;
-    const surchargeOn = await fareAdjustmentEnabled(getSql());
+    const surchargeOn = await isOutageActiveForRequest(getSql(), demoSessionIdFrom(c));
 
     const rows = await db
       .select({
@@ -301,7 +311,7 @@ export function flightsRoutes(): Hono {
       .where(eq(flightFares.flightId, id))
       .orderBy(asc(cabins.sortOrder));
 
-    const surchargeOn = await fareAdjustmentEnabled(getSql());
+    const surchargeOn = await isOutageActiveForRequest(getSql(), demoSessionIdFrom(c));
 
     return c.json({
       flight: {

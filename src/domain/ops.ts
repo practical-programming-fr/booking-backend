@@ -8,6 +8,7 @@
 // itself.
 
 import type postgres from "postgres";
+import { loadEnv } from "../env.js";
 
 export const FARE_ADJUSTMENT_FLAG = "fare_adjustment_v2";
 
@@ -17,6 +18,17 @@ export const FARE_ADJUSTMENT_FLAG = "fare_adjustment_v2";
 // ops layer, so enabling it keeps the booking site fully healthy. It exists to
 // demo detection plus automatic self-recovery with no code fix and no PR.
 export const TRAFFIC_SPIKE_FLAG = "traffic_spike_sim";
+
+// Kind stored on a scoped (per-session) outage row. The scoped scenario mirrors
+// the global fare_adjustment_v2 outage but is limited to a single session.
+export const DEMO_SESSION_OUTAGE_KIND = "outage";
+
+// TTL for the shared in-memory ops cache used on the pricing hot path. Within
+// this window the request-aware outage guard answers from memory instead of
+// hitting the DB, so the scoped check adds no per-request query in the common
+// case. Kept short so a newly armed or ended scoped session (and any global
+// flag flip) takes effect within a few seconds.
+export const OPS_CACHE_TTL_MS = 7000;
 
 export type OpsFlag = {
   key: string;
@@ -33,6 +45,17 @@ export type OpsError = {
   status: number;
   message: string;
   stack: string | null;
+  // Set only on a scoped (per-session) outage 500 so the NOC can attribute it
+  // to the demo session that caused it. Null for global-outage and ordinary
+  // 5xx, which keeps scoped failures distinguishable from global ones.
+  demoSessionId: string | null;
+};
+
+export type DemoSession = {
+  sessionId: string;
+  kind: string;
+  createdAt: string;
+  expiresAt: string;
 };
 
 export type IncidentEvent = {
@@ -79,6 +102,165 @@ export async function fareAdjustmentEnabled(sql: postgres.Sql): Promise<boolean>
   return getFlag(sql, FARE_ADJUSTMENT_FLAG);
 }
 
+// --- Scoped (per-session) outage sessions ---------------------------------
+//
+// A scoped outage breaks the booking site for a single session only. Rows live
+// in public.ops_demo_sessions and lapse at expires_at. Every helper here is
+// defensive: if the table is missing (pre-migration) or a read fails, the read
+// paths fail safe (empty result / no-op), mirroring getFlag, so the pricing
+// path is never taken down by the scoped-outage machinery itself.
+
+function mapDemoSession(row: {
+  session_id: string;
+  kind: string;
+  created_at: Date;
+  expires_at: Date;
+}): DemoSession {
+  return {
+    sessionId: row.session_id,
+    kind: row.kind,
+    createdAt: row.created_at.toISOString(),
+    expiresAt: row.expires_at.toISOString(),
+  };
+}
+
+// Arm a scoped outage for `sessionId`, expiring `ttlSeconds` from now. Upserts
+// so re-arming an existing session simply extends it. When ttlSeconds is
+// omitted the env default (DEMO_SESSION_TTL_SECONDS) is used.
+export async function startDemoSession(
+  sql: postgres.Sql,
+  sessionId: string,
+  ttlSeconds?: number,
+): Promise<DemoSession> {
+  const ttl =
+    ttlSeconds && ttlSeconds > 0 ? ttlSeconds : loadEnv().DEMO_SESSION_TTL_SECONDS;
+  try {
+    const rows = (await sql`
+      insert into public.ops_demo_sessions (session_id, kind, expires_at)
+      values (
+        ${sessionId},
+        ${DEMO_SESSION_OUTAGE_KIND},
+        now() + (${ttl} || ' seconds')::interval
+      )
+      on conflict (session_id) do update
+        set expires_at = excluded.expires_at,
+            kind = excluded.kind
+      returning session_id, kind, created_at, expires_at
+    `) as unknown as Array<{
+      session_id: string;
+      kind: string;
+      created_at: Date;
+      expires_at: Date;
+    }>;
+    invalidateOpsCache();
+    if (rows[0]) {
+      return mapDemoSession(rows[0]);
+    }
+  } catch {
+    // Table missing (pre-migration) or transient failure: fall through to a
+    // computed row so the caller still gets a coherent response.
+  }
+  const now = new Date();
+  return {
+    sessionId,
+    kind: DEMO_SESSION_OUTAGE_KIND,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + ttl * 1000).toISOString(),
+  };
+}
+
+// End a scoped outage. No-op if the row (or table) is absent.
+export async function endDemoSession(
+  sql: postgres.Sql,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await sql`
+      delete from public.ops_demo_sessions where session_id = ${sessionId}
+    `;
+    invalidateOpsCache();
+  } catch {
+    // Best effort: never throw from the scoped-outage machinery.
+  }
+}
+
+// The session ids with an active (unexpired) scoped outage. Fails safe to an
+// empty array when the table is missing or a read fails.
+export async function listActiveDemoSessions(
+  sql: postgres.Sql,
+): Promise<string[]> {
+  try {
+    const rows = (await sql`
+      select session_id from public.ops_demo_sessions where expires_at > now()
+    `) as unknown as Array<{ session_id: string }>;
+    return rows.map((row) => row.session_id);
+  } catch {
+    return [];
+  }
+}
+
+// --- In-memory TTL cache + request-aware outage guard ---------------------
+//
+// Holds both the global fare_adjustment_v2 flag state and the set of active
+// scoped session ids, refreshed lazily on read once older than OPS_CACHE_TTL_MS.
+// This replaces the per-request raw DB read that fareAdjustmentEnabled did on
+// the pricing hot path, and folds the scoped check into the same cached state
+// so the scoped feature adds no extra per-request query in the cached case.
+
+type OpsCacheState = {
+  fetchedAt: number;
+  globalOutage: boolean;
+  activeSessions: Set<string>;
+};
+
+let opsCache: OpsCacheState | null = null;
+
+// Clear the cache so the next read reflects a just-changed flag or scoped
+// session. Called by the mutation helpers (setFlag, start/endDemoSession,
+// resetOps) so ops actions take effect promptly rather than after the TTL.
+export function invalidateOpsCache(): void {
+  opsCache = null;
+}
+
+async function refreshOpsCache(sql: postgres.Sql): Promise<OpsCacheState> {
+  const globalOutage = await getFlag(sql, FARE_ADJUSTMENT_FLAG);
+  const activeSessions = new Set(await listActiveDemoSessions(sql));
+  opsCache = { fetchedAt: Date.now(), globalOutage, activeSessions };
+  return opsCache;
+}
+
+async function getOpsCache(sql: postgres.Sql): Promise<OpsCacheState> {
+  if (opsCache && Date.now() - opsCache.fetchedAt < OPS_CACHE_TTL_MS) {
+    return opsCache;
+  }
+  return refreshOpsCache(sql);
+}
+
+// The outage guard for the three pricing hot-path call sites. Returns true when
+// the global outage flag is on (everyone 500s, unchanged) OR when the request
+// carries a demo session id that is in the active scoped set (only that request
+// 500s). Uses the cached state, so it does not hit the DB within the TTL.
+export async function isOutageActiveForRequest(
+  sql: postgres.Sql,
+  demoSessionId: string | undefined,
+): Promise<boolean> {
+  const cache = await getOpsCache(sql);
+  if (cache.globalOutage) {
+    return true;
+  }
+  if (demoSessionId && cache.activeSessions.has(demoSessionId)) {
+    return true;
+  }
+  return false;
+}
+
+// The last-known global outage flag state from the cache, without a DB hit.
+// Used only by the error-logging path to decide whether a 500 should be
+// attributed to a scoped session (global off) or left null (global on).
+export function cachedGlobalOutageActive(): boolean {
+  return opsCache?.globalOutage ?? false;
+}
+
 export async function setFlag(
   sql: postgres.Sql,
   key: string,
@@ -93,6 +275,7 @@ export async function setFlag(
           updated_at = now(),
           updated_by = excluded.updated_by
   `;
+  invalidateOpsCache();
 }
 
 export async function listFlags(sql: postgres.Sql): Promise<OpsFlag[]> {
@@ -120,14 +303,29 @@ export async function logOpsError(
     status: number;
     message: string;
     stack?: string | null;
+    // Stamped only for scoped (per-session) outage 500s; null otherwise.
+    demoSessionId?: string | null;
   },
 ): Promise<void> {
   try {
     const stack = entry.stack ? entry.stack.slice(0, 4000) : null;
-    await sql`
-      insert into public.ops_errors (method, path, status, message, stack)
-      values (${entry.method}, ${entry.path}, ${entry.status}, ${entry.message.slice(0, 1000)}, ${stack})
-    `;
+    const message = entry.message.slice(0, 1000);
+    if (entry.demoSessionId) {
+      // Scoped-outage 500: include the attribution column. Only reached once a
+      // scoped session exists, which requires the migration (and thus the
+      // column) to be present.
+      await sql`
+        insert into public.ops_errors (method, path, status, message, stack, demo_session_id)
+        values (${entry.method}, ${entry.path}, ${entry.status}, ${message}, ${stack}, ${entry.demoSessionId})
+      `;
+    } else {
+      // Global-outage and ordinary 5xx: unchanged insert, so error logging
+      // keeps working even before the demo_session_id column exists.
+      await sql`
+        insert into public.ops_errors (method, path, status, message, stack)
+        values (${entry.method}, ${entry.path}, ${entry.status}, ${message}, ${stack})
+      `;
+    }
   } catch {
     // Best effort: never let error logging mask the original error.
   }
@@ -138,7 +336,7 @@ export async function listRecentErrors(
   limit = 50,
 ): Promise<OpsError[]> {
   const rows = (await sql`
-    select id, occurred_at, method, path, status, message, stack
+    select id, occurred_at, method, path, status, message, stack, demo_session_id
     from public.ops_errors
     order by occurred_at desc
     limit ${limit}
@@ -150,6 +348,7 @@ export async function listRecentErrors(
     status: number;
     message: string;
     stack: string | null;
+    demo_session_id: string | null;
   }>;
   return rows.map((row) => ({
     id: Number(row.id),
@@ -159,6 +358,7 @@ export async function listRecentErrors(
     status: row.status,
     message: row.message,
     stack: row.stack,
+    demoSessionId: row.demo_session_id ?? null,
   }));
 }
 
@@ -298,9 +498,10 @@ export async function updateIncident(
 }
 
 // Reset for the demo: turn both scenario flags off (the fare_adjustment_v2
-// outage and the benign traffic_spike_sim), clear the error log, and close any
-// open incidents of any kind. Called by the /v1/_ops/reset route (which the
-// nightly reset workflow also hits) and the dashboard "disable flag" hatch.
+// outage and the benign traffic_spike_sim), clear the error log, close any open
+// incidents of any kind, and wipe every scoped (per-session) outage session.
+// Called by the /v1/_ops/reset route (which the nightly reset workflow also
+// hits) and the dashboard "disable flag" hatch.
 export async function resetOps(sql: postgres.Sql): Promise<void> {
   await setFlag(sql, FARE_ADJUSTMENT_FLAG, false);
   await setFlag(sql, TRAFFIC_SPIKE_FLAG, false);
@@ -310,4 +511,12 @@ export async function resetOps(sql: postgres.Sql): Promise<void> {
     set status = 'resolved', resolved_at = now(), updated_at = now()
     where status = 'open'
   `;
+  // Clear scoped outage sessions too, so the nightly reset returns the site to
+  // a fully healthy state. Defensive: skip quietly if the table is absent.
+  try {
+    await sql`delete from public.ops_demo_sessions`;
+  } catch {
+    // Table missing (pre-migration): nothing to clear.
+  }
+  invalidateOpsCache();
 }

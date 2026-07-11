@@ -6,13 +6,16 @@ import {
   appendIncidentEvent,
   countRecentErrors,
   createIncident,
+  endDemoSession,
   getIncident,
   getOpenIncident,
+  listActiveDemoSessions,
   listFlags,
   listIncidents,
   listRecentErrors,
   resetOps,
   setFlag,
+  startDemoSession,
   updateIncident,
   type IncidentEvent,
 } from "../domain/ops.js";
@@ -28,6 +31,11 @@ const flagSchema = z.object({
   key: z.string().min(1).max(80),
   enabled: z.boolean(),
   actor: z.string().max(200).nullable().optional(),
+});
+
+const startDemoSessionSchema = z.object({
+  sessionId: z.string().min(1).max(200),
+  ttlSeconds: z.number().int().min(1).max(86400).optional(),
 });
 
 const createIncidentSchema = z.object({
@@ -82,6 +90,31 @@ export function opsRoutes(): Hono {
     const { key, enabled, actor } = c.req.valid("json");
     await setFlag(getSql(), key, enabled, actor ?? null);
     return c.json({ ok: true, flags: await listFlags(getSql()) });
+  });
+
+  // --- Scoped (per-session) outage sessions --------------------------------
+  // Manage the SCOPED version of the outage: break the site for one session
+  // only, leaving the ~100 other callers healthy. Independent of the global
+  // /flags routes and the global fare_adjustment_v2 flag, which are unchanged.
+  app.get("/demo-sessions", async (c) => {
+    return c.json({ sessions: await listActiveDemoSessions(getSql()) });
+  });
+
+  app.post("/demo-sessions", zValidator("json", startDemoSessionSchema), async (c) => {
+    const { sessionId, ttlSeconds } = c.req.valid("json");
+    const session = await startDemoSession(getSql(), sessionId, ttlSeconds);
+    return c.json({ session }, 201);
+  });
+
+  app.delete("/demo-sessions/:sessionId", async (c) => {
+    await endDemoSession(getSql(), c.req.param("sessionId"));
+    return c.json({ ok: true });
+  });
+
+  // POST alias for clients that cannot send DELETE with a path param.
+  app.post("/demo-sessions/:sessionId/end", async (c) => {
+    await endDemoSession(getSql(), c.req.param("sessionId"));
+    return c.json({ ok: true });
   });
 
   // --- Error log -----------------------------------------------------------

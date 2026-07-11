@@ -100,6 +100,15 @@ function getSessionId(c: Context): string | null {
   return parsed.success ? parsed.data : null;
 }
 
+// The scoped-outage session id forwarded in the demo-session header (if any).
+// Mirrors how getSessionId reads the booking-session header, but is a free-form
+// identifier (not required to be a UUID) matched against active scoped sessions.
+function getDemoSessionId(c: Context): string | undefined {
+  const env = loadEnv();
+  const raw = c.req.header(env.DEMO_SESSION_HEADER.toLowerCase());
+  return raw && raw.length > 0 ? raw : undefined;
+}
+
 function handleDomainError(err: unknown):
   | { status: number; body: { error: { code: string; message: string; status: number } } }
   | null {
@@ -134,6 +143,7 @@ export function bookingsRoutes(): Hono {
         pax: c.req.valid("json").pax,
         contact: c.req.valid("json").contact,
         sessionId,
+        demoSessionId: getDemoSessionId(c),
       });
       if (c.req.valid("json").contact) {
         await updateContact(sql, result.pnr, c.req.valid("json").contact!);

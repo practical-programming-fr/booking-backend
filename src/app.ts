@@ -4,7 +4,7 @@ import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
 import { loadEnv } from "./env.js";
 import { getSql } from "./db/client.js";
-import { logOpsError } from "./domain/ops.js";
+import { cachedGlobalOutageActive, logOpsError } from "./domain/ops.js";
 import { healthRoutes } from "./routes/health.js";
 import { airportsRoutes } from "./routes/airports.js";
 import { routesRoutes } from "./routes/routes.js";
@@ -32,6 +32,7 @@ export function buildApp(): Hono {
         "Content-Type",
         "Authorization",
         env.BOOKING_SESSION_HEADER,
+        env.DEMO_SESSION_HEADER,
         "MCP-Protocol-Version",
         "Mcp-Session-Id",
       ],
@@ -48,12 +49,22 @@ export function buildApp(): Hono {
     // real error payloads (message + stack). Best effort; never blocks the
     // response and never masks the original error.
     if (status >= 500) {
+      // Attribute the 5xx to a scoped demo session only when the global outage
+      // flag is OFF (from the cache the guard just used, so no extra DB hit). If
+      // the global flag is on, everyone 500s regardless of session, so we leave
+      // the stamp null to keep global-outage failures distinguishable from
+      // scoped ones (the global incident orchestrator keys off the global flag
+      // plus the null-stamped 5xx count).
+      const demoSessionId = c.req.header(env.DEMO_SESSION_HEADER.toLowerCase());
+      const stamp =
+        demoSessionId && !cachedGlobalOutageActive() ? demoSessionId : null;
       await logOpsError(getSql(), {
         method: c.req.method,
         path: c.req.path,
         status,
         message: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack ?? null : null,
+        demoSessionId: stamp,
       });
     }
     return c.json(

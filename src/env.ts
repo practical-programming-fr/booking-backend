@@ -31,6 +31,24 @@ const envSchema = z
       .optional()
       .default("x-booking-session"),
 
+    // Per-session (scoped) outage identity. The frontend forwards the demo
+    // presenter's session id in this header so the backend can break the site
+    // for that one session only, leaving everyone else healthy. Distinct from
+    // BOOKING_SESSION_HEADER (which identifies a booking owner) so the two
+    // concerns stay independent.
+    DEMO_SESSION_HEADER: z
+      .string()
+      .optional()
+      .default("x-demo-session"),
+
+    // How long an armed scoped outage session stays active before it lapses.
+    // Defaults to 1200 seconds (20 minutes), matching the outage TTL.
+    DEMO_SESSION_TTL_SECONDS: z
+      .string()
+      .optional()
+      .default("1200")
+      .transform((value) => Number.parseInt(value, 10)),
+
     // Jira Cloud integration for the request_marketing_change MCP tool. All
     // optional: when any are missing the tool degrades gracefully and reports
     // that Jira is not configured, so local dev and the build work without
