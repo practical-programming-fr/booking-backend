@@ -14,6 +14,7 @@ import {
   invalidateOpsCache,
   isOutageActiveForRequest,
   listActiveDemoSessions,
+  listActiveDemoSessionsDetailed,
   setFlag,
   startDemoSession,
 } from "../src/domain/ops.js";
@@ -21,6 +22,8 @@ import {
 type DemoRow = {
   session_id: string;
   kind: string;
+  slack_channel: string | null;
+  run_full_arc: boolean;
   created_at: Date;
   expires_at: Date;
 };
@@ -52,14 +55,22 @@ function createFakeSql() {
     }
 
     if (text.startsWith("insert into public.ops_demo_sessions")) {
-      const [sessionId, kind] = values as [string, string];
-      // The fake resolves the interval to a fixed +ttl below via the ttl arg
-      // encoded as the third value.
-      const ttl = Number(values[2]);
+      // Insert column order is (session_id, kind, slack_channel, run_full_arc,
+      // expires_at) with the interval built from the ttl arg, so the ttl is the
+      // fifth interpolated value.
+      const [sessionId, kind, slackChannel, runFullArc] = values as [
+        string,
+        string,
+        string | null,
+        boolean,
+      ];
+      const ttl = Number(values[4]);
       const now = new Date();
       const row: DemoRow = {
         session_id: sessionId,
         kind,
+        slack_channel: slackChannel ?? null,
+        run_full_arc: runFullArc,
         created_at: sessions.get(sessionId)?.created_at ?? now,
         expires_at: new Date(now.getTime() + ttl * 1000),
       };
@@ -71,6 +82,26 @@ function createFakeSql() {
       const [sessionId] = values as [string];
       sessions.delete(sessionId);
       return Promise.resolve([]);
+    }
+
+    // Detailed listing: full row objects (checked before the ids-only branch
+    // since both start with "select session_id").
+    if (text.startsWith("select session_id, kind, slack_channel")) {
+      counters.sessionReads += 1;
+      const now = Date.now();
+      const active = [...sessions.values()].filter(
+        (row) => row.expires_at.getTime() > now,
+      );
+      return Promise.resolve(
+        active.map((row) => ({
+          session_id: row.session_id,
+          kind: row.kind,
+          slack_channel: row.slack_channel,
+          run_full_arc: row.run_full_arc,
+          created_at: row.created_at,
+          expires_at: row.expires_at,
+        })),
+      );
     }
 
     if (text.startsWith("select session_id from public.ops_demo_sessions")) {
@@ -125,6 +156,59 @@ describe("startDemoSession / endDemoSession / listActiveDemoSessions", () => {
     await endDemoSession(sql, "sess-2");
     expect(await listActiveDemoSessions(sql)).not.toContain("sess-2");
   });
+
+  it("defaults metadata when none is supplied (no channel, full arc)", async () => {
+    const { sql } = createFakeSql();
+    const session = await startDemoSession(sql, "sess-default", 60);
+    expect(session.slackChannel).toBeNull();
+    expect(session.runFullArc).toBe(true);
+  });
+});
+
+describe("scoped session metadata (slackChannel / runFullArc)", () => {
+  it("persists and returns slackChannel and runFullArc on start", async () => {
+    const { sql } = createFakeSql();
+    const session = await startDemoSession(sql, "sess-meta", 60, {
+      slackChannel: "#incident-room",
+      runFullArc: false,
+    });
+    expect(session.slackChannel).toBe("#incident-room");
+    expect(session.runFullArc).toBe(false);
+  });
+
+  it("returns full session objects, including metadata, from the detailed listing", async () => {
+    const { sql } = createFakeSql();
+    await startDemoSession(sql, "sess-detailed", 600, {
+      slackChannel: "#ops-demo",
+      runFullArc: true,
+    });
+
+    const detailed = await listActiveDemoSessionsDetailed(sql);
+    const found = detailed.find((s) => s.sessionId === "sess-detailed");
+    expect(found).toBeDefined();
+    expect(found?.slackChannel).toBe("#ops-demo");
+    expect(found?.runFullArc).toBe(true);
+    expect(found?.kind).toBe("outage");
+    expect(found?.expiresAt).toBeDefined();
+    expect(found?.createdAt).toBeDefined();
+  });
+
+  it("still returns a session with run_full_arc = false (flagged, not dropped)", async () => {
+    const { sql } = createFakeSql();
+    await startDemoSession(sql, "sess-quiet", 600, {
+      slackChannel: "#quiet",
+      runFullArc: false,
+    });
+
+    const detailed = await listActiveDemoSessionsDetailed(sql);
+    const quiet = detailed.find((s) => s.sessionId === "sess-quiet");
+    expect(quiet).toBeDefined();
+    expect(quiet?.runFullArc).toBe(false);
+
+    // The quiet session is still an active id for the hot path: a request
+    // carrying it still 500s regardless of runFullArc.
+    expect(await listActiveDemoSessions(sql)).toContain("sess-quiet");
+  });
 });
 
 describe("isOutageActiveForRequest", () => {
@@ -145,6 +229,21 @@ describe("isOutageActiveForRequest", () => {
     // A different session, and no session at all, stay healthy.
     expect(await isOutageActiveForRequest(sql, "scoped-B")).toBe(false);
     expect(await isOutageActiveForRequest(sql, undefined)).toBe(false);
+  });
+
+  it("still 500s a matching session regardless of slackChannel / runFullArc", async () => {
+    const { sql } = createFakeSql();
+    await setFlag(sql, FARE_ADJUSTMENT_FLAG, false);
+    // A quiet, visual-outage-only session (runFullArc false) with a channel.
+    await startDemoSession(sql, "scoped-quiet", 600, {
+      slackChannel: "#quiet",
+      runFullArc: false,
+    });
+
+    // The hot-path guard keys only off the active session id, so this request
+    // still 500s exactly as before the metadata existed.
+    expect(await isOutageActiveForRequest(sql, "scoped-quiet")).toBe(true);
+    expect(await isOutageActiveForRequest(sql, "scoped-other")).toBe(false);
   });
 
   it("returns false when the scoped session has expired and the global flag is off", async () => {

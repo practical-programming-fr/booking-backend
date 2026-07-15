@@ -9,7 +9,7 @@ import {
   endDemoSession,
   getIncident,
   getOpenIncident,
-  listActiveDemoSessions,
+  listActiveDemoSessionsDetailed,
   listFlags,
   listIncidents,
   listRecentErrors,
@@ -36,6 +36,10 @@ const flagSchema = z.object({
 const startDemoSessionSchema = z.object({
   sessionId: z.string().min(1).max(200),
   ttlSeconds: z.number().int().min(1).max(86400).optional(),
+  // Per-session Ops metadata (additive). When absent the session keeps the
+  // previous behaviour: no Slack channel, full arc.
+  slackChannel: z.string().max(200).optional(),
+  runFullArc: z.boolean().optional(),
 });
 
 const createIncidentSchema = z.object({
@@ -97,13 +101,22 @@ export function opsRoutes(): Hono {
   // only, leaving the ~100 other callers healthy. Independent of the global
   // /flags routes and the global fare_adjustment_v2 flag, which are unchanged.
   app.get("/demo-sessions", async (c) => {
-    return c.json({ sessions: await listActiveDemoSessions(getSql()) });
+    const sessions = await listActiveDemoSessionsDetailed(getSql());
+    // `id` is included as an alias of `sessionId` (current id convention) so the
+    // frontend can key off either. Both carry the same value.
+    return c.json({
+      sessions: sessions.map((session) => ({ id: session.sessionId, ...session })),
+    });
   });
 
   app.post("/demo-sessions", zValidator("json", startDemoSessionSchema), async (c) => {
-    const { sessionId, ttlSeconds } = c.req.valid("json");
-    const session = await startDemoSession(getSql(), sessionId, ttlSeconds);
-    return c.json({ session }, 201);
+    const { sessionId, ttlSeconds, slackChannel, runFullArc } = c.req.valid("json");
+    const session = await startDemoSession(getSql(), sessionId, ttlSeconds, {
+      slackChannel: slackChannel ?? null,
+      runFullArc: runFullArc ?? true,
+    });
+    // `id` alias mirrors GET so the created object and listed objects match.
+    return c.json({ session: { id: session.sessionId, ...session } }, 201);
   });
 
   app.delete("/demo-sessions/:sessionId", async (c) => {

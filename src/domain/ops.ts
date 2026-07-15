@@ -54,6 +54,13 @@ export type OpsError = {
 export type DemoSession = {
   sessionId: string;
   kind: string;
+  // Which Slack channel THIS session's incident should post to. Null when the
+  // session did not specify one (the frontend then falls back to its default).
+  slackChannel: string | null;
+  // Whether THIS session runs the full incident arc (detect plus agents plus
+  // PR) vs a quiet, visual-outage-only session. Defaults to true so existing
+  // rows and callers keep the current full-arc behaviour.
+  runFullArc: boolean;
   createdAt: string;
   expiresAt: string;
 };
@@ -113,42 +120,68 @@ export async function fareAdjustmentEnabled(sql: postgres.Sql): Promise<boolean>
 function mapDemoSession(row: {
   session_id: string;
   kind: string;
+  slack_channel?: string | null;
+  run_full_arc?: boolean | null;
   created_at: Date;
   expires_at: Date;
 }): DemoSession {
   return {
     sessionId: row.session_id,
     kind: row.kind,
+    // Fail safe to null / true if the columns are missing (pre-migration).
+    slackChannel: row.slack_channel ?? null,
+    runFullArc: row.run_full_arc ?? true,
     createdAt: row.created_at.toISOString(),
     expiresAt: row.expires_at.toISOString(),
   };
 }
 
+// Optional per-session metadata the booking frontend Ops panel uses to route a
+// scoped outage. Additive: omitting it preserves the previous behaviour (no
+// Slack channel, full arc). Passed as an options object so the signature stays
+// backward compatible with existing two/three-argument callers.
+export type StartDemoSessionOptions = {
+  // Which Slack channel THIS session's incident should post to.
+  slackChannel?: string | null;
+  // Whether THIS session runs the full incident arc. Defaults to true.
+  runFullArc?: boolean;
+};
+
 // Arm a scoped outage for `sessionId`, expiring `ttlSeconds` from now. Upserts
-// so re-arming an existing session simply extends it. When ttlSeconds is
-// omitted the env default (DEMO_SESSION_TTL_SECONDS) is used.
+// so re-arming an existing session simply extends it (and refreshes its
+// metadata). When ttlSeconds is omitted the env default
+// (DEMO_SESSION_TTL_SECONDS) is used.
 export async function startDemoSession(
   sql: postgres.Sql,
   sessionId: string,
   ttlSeconds?: number,
+  options?: StartDemoSessionOptions,
 ): Promise<DemoSession> {
   const ttl =
     ttlSeconds && ttlSeconds > 0 ? ttlSeconds : loadEnv().DEMO_SESSION_TTL_SECONDS;
+  const slackChannel = options?.slackChannel ?? null;
+  const runFullArc = options?.runFullArc ?? true;
   try {
     const rows = (await sql`
-      insert into public.ops_demo_sessions (session_id, kind, expires_at)
+      insert into public.ops_demo_sessions (session_id, kind, slack_channel, run_full_arc, expires_at)
       values (
         ${sessionId},
         ${DEMO_SESSION_OUTAGE_KIND},
+        ${slackChannel},
+        ${runFullArc},
         now() + (${ttl} || ' seconds')::interval
       )
       on conflict (session_id) do update
         set expires_at = excluded.expires_at,
-            kind = excluded.kind
-      returning session_id, kind, created_at, expires_at
+            kind = excluded.kind,
+            slack_channel = excluded.slack_channel,
+            run_full_arc = excluded.run_full_arc
+      returning session_id, kind, slack_channel, run_full_arc, created_at, expires_at
     `) as unknown as Array<{
       session_id: string;
       kind: string;
+      slack_channel: string | null;
+      run_full_arc: boolean;
       created_at: Date;
       expires_at: Date;
     }>;
@@ -164,6 +197,8 @@ export async function startDemoSession(
   return {
     sessionId,
     kind: DEMO_SESSION_OUTAGE_KIND,
+    slackChannel,
+    runFullArc,
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + ttl * 1000).toISOString(),
   };
@@ -185,7 +220,10 @@ export async function endDemoSession(
 }
 
 // The session ids with an active (unexpired) scoped outage. Fails safe to an
-// empty array when the table is missing or a read fails.
+// empty array when the table is missing or a read fails. This is the hot-path
+// helper feeding the in-memory cache and isOutageActiveForRequest, so it stays
+// a lean, ids-only read (unchanged shape). Callers that need the per-session
+// metadata use listActiveDemoSessionsDetailed instead.
 export async function listActiveDemoSessions(
   sql: postgres.Sql,
 ): Promise<string[]> {
@@ -194,6 +232,35 @@ export async function listActiveDemoSessions(
       select session_id from public.ops_demo_sessions where expires_at > now()
     `) as unknown as Array<{ session_id: string }>;
     return rows.map((row) => row.session_id);
+  } catch {
+    return [];
+  }
+}
+
+// The full active (unexpired) scoped-outage sessions, including the per-session
+// metadata (slack_channel, run_full_arc) the booking frontend Ops panel reads.
+// Used by GET /demo-sessions, not on the pricing hot path. Fails safe to an
+// empty array when the table is missing or a read fails. Sessions with
+// run_full_arc = false are still returned (just flagged), so the frontend can
+// list them and decide whether to fire the arc.
+export async function listActiveDemoSessionsDetailed(
+  sql: postgres.Sql,
+): Promise<DemoSession[]> {
+  try {
+    const rows = (await sql`
+      select session_id, kind, slack_channel, run_full_arc, created_at, expires_at
+      from public.ops_demo_sessions
+      where expires_at > now()
+      order by created_at desc
+    `) as unknown as Array<{
+      session_id: string;
+      kind: string;
+      slack_channel: string | null;
+      run_full_arc: boolean;
+      created_at: Date;
+      expires_at: Date;
+    }>;
+    return rows.map(mapDemoSession);
   } catch {
     return [];
   }
