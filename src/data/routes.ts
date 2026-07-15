@@ -20,7 +20,7 @@ export type SeedRoute = {
 // shrinks, etc) using rough great-circle approximations.
 const lhrDurations: Record<string, number> = {
   CDG:  80, AMS:  85, BCN: 130, CPH: 125, FCO: 155, LIS: 175, IST: 240, ATH: 210,
-  JFK: 440, SFO: 675, HND: 720, SIN: 790, DXB: 420, GRU: 710, SYD: 1260, JNB: 655,
+  JFK: 440, ORD: 540, SFO: 675, HND: 720, SIN: 790, DXB: 420, GRU: 710, SYD: 1260, JNB: 655,
 };
 
 const sfoDurations: Record<string, number> = {
@@ -35,7 +35,7 @@ const sfoDurations: Record<string, number> = {
 
 const baseFares: Record<string, number> = {
   CDG: 140, AMS: 120, BCN: 160, CPH: 175, FCO: 180, LIS: 195, IST: 220, ATH: 210,
-  JFK: 690, HND: 980, SIN: 1020, DXB: 640, GRU: 920, SYD: 1480, JNB: 860,
+  JFK: 690, ORD: 690, HND: 980, SIN: 1020, DXB: 640, GRU: 920, SYD: 1480, JNB: 860,
   LHR: 880, SFO: 880,
 };
 
@@ -43,7 +43,7 @@ const baseFares: Record<string, number> = {
 // longest routes a few times a week.
 const freqTargets: Record<string, number> = {
   CDG: 35, AMS: 28, BCN: 21, CPH: 21, FCO: 18, LIS: 14, IST: 14, ATH: 14,
-  JFK: 14, SFO: 7,  HND: 7,  SIN: 7,  DXB: 14, GRU: 5,  SYD: 4,  JNB: 5,
+  JFK: 14, ORD: 28, SFO: 7,  HND: 7,  SIN: 7,  DXB: 14, GRU: 5,  SYD: 4,  JNB: 5,
   LHR: 7,
 };
 
@@ -80,6 +80,16 @@ const amsFreq: Record<string, number> = {
   JFK: 14, SFO: 4, DXB: 14, SIN: 4,
 };
 
+// Chicago (ORD) as a secondary origin. Gives the disruption demo real onward
+// connections out of ORD (ORD to SFO) and a hub return (ORD to LHR), so a
+// booking on the London to Chicago flight can carry a genuine later leg.
+const ordDurations: Record<string, number> = {
+  SFO: 265, LHR: 545,
+};
+const ordFreq: Record<string, number> = {
+  SFO: 21, LHR: 21,
+};
+
 function buildRoutesFromOrigin(
   origin: SeedAirport,
   durations: Record<string, number>,
@@ -108,10 +118,12 @@ const lhr = airports.find((airport) => airport.iata === "LHR")!;
 const sfo = airports.find((airport) => airport.iata === "SFO")!;
 const cdg = airports.find((airport) => airport.iata === "CDG")!;
 const ams = airports.find((airport) => airport.iata === "AMS")!;
+const ord = airports.find((airport) => airport.iata === "ORD")!;
 
 export const routes: SeedRoute[] = [
   ...buildRoutesFromHub(lhr, lhrDurations),
   ...buildRoutesFromHub(sfo, sfoDurations),
   ...buildRoutesFromOrigin(cdg, cdgDurations, cdgFreq),
   ...buildRoutesFromOrigin(ams, amsDurations, amsFreq),
+  ...buildRoutesFromOrigin(ord, ordDurations, ordFreq),
 ];

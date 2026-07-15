@@ -37,6 +37,7 @@ export const airports: SeedAirport[] = [
 
   // Long haul
   { iata: "JFK", icao: "KJFK", city: "New York",     country: "United States",  continent: "North America", lat: 40.64, lon: -73.78,  tz: "America/New_York",     isHub: false },
+  { iata: "ORD", icao: "KORD", city: "Chicago",      country: "United States",  continent: "North America", lat: 41.98, lon: -87.90,  tz: "America/Chicago",      isHub: false },
   { iata: "HND", icao: "RJTT", city: "Tokyo",        country: "Japan",          continent: "Asia",          lat: 35.55, lon: 139.78,  tz: "Asia/Tokyo",            isHub: false },
   { iata: "SIN", icao: "WSSS", city: "Singapore",    country: "Singapore",      continent: "Asia",          lat:  1.36, lon: 103.99,  tz: "Asia/Singapore",        isHub: false },
   { iata: "DXB", icao: "OMDB", city: "Dubai",        country: "UAE",            continent: "Asia",          lat: 25.25, lon:  55.36,  tz: "Asia/Dubai",            isHub: false },

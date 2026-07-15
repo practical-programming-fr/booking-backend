@@ -49,6 +49,15 @@ const envSchema = z
       .default("1200")
       .transform((value) => Number.parseInt(value, 10)),
 
+    // Bearer token identifying the external FlyLo Ops Agent as a service
+    // principal. Optional so local dev works without it. When set, the
+    // agent-facing ops-disruption endpoints under /v1/ops require
+    // `Authorization: Bearer <OPS_AGENT_TOKEN>`. Distinct from the browser
+    // BOOKING_SESSION_HEADER identity and from OPS_SHARED_SECRET (which guards
+    // the /v1/_ops incident console). Provide as a platform secret; never
+    // commit it.
+    OPS_AGENT_TOKEN: z.string().min(1).optional(),
+
     // Jira Cloud integration for the request_marketing_change MCP tool. All
     // optional: when any are missing the tool degrades gracefully and reports
     // that Jira is not configured, so local dev and the build work without

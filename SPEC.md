@@ -44,6 +44,7 @@ All read from `process.env`; see `.env.example`.
 | `JIRA_EMAIL` | optional; Atlassian account email (Basic auth) |
 | `JIRA_API_TOKEN` | optional; Atlassian API token (Basic auth), secret |
 | `JIRA_PROJECT_KEY` | optional; project key marketing tickets are filed into |
+| `OPS_AGENT_TOKEN` | optional; bearer token gating the `/v1/ops` disruption endpoints for the FlyLo Ops Agent service principal |
 
 The `JIRA_*` vars are all optional. The `request_marketing_change` MCP tool
 uses them to file a Jira ticket; when any is unset the tool degrades
@@ -100,6 +101,29 @@ of truth. Summary:
 
 A scheduled task (Vercel Cron, configured in `vercel.json`) hits
 `POST /v1/_cron/release-expired-holds` every minute.
+
+### Ops disruption / recovery (FlyLo Ops Agent)
+
+The `/v1/ops` endpoints are agent-shaped operational tools for airline
+disruption and recovery. They are distinct from the `/v1/_ops` incident
+console. Auth is a service principal: when `OPS_AGENT_TOKEN` is set every
+request must send `Authorization: Bearer <OPS_AGENT_TOKEN>`; when it is unset
+the endpoints are open in local dev but return 503 in production. The existing
+`x-booking-session` browser identity is unchanged and additional.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/ops/flights/:flightNo/passengers` | booked passengers on a flight, with contact + onward-connection info |
+| `POST` | `/v1/ops/flights/:flightNo/cancel` | mark a flight cancelled and return the affected fan-out (idempotent) |
+| `GET` | `/v1/ops/flights/:flightNo/alternatives` | candidate rebooking flights (same route, near-term, per-cabin availability + fare delta) |
+| `POST` | `/v1/ops/rebook` | move a booking segment onto a new flight, keyed on `(pnr, fromSegmentId, toFlightId)` (idempotent) |
+
+Flight selectors accept `?departDate=YYYY-MM-DD` or `?flightId=` to disambiguate
+a flight number that runs on more than one day; without them the soonest
+upcoming departure wins. Writes go through the booking domain (seat status,
+fare counters, totals recompute) and record `booking_events` for auditability.
+Rebookings are additionally recorded in `ops_rebookings` as the idempotency
+ledger.
 
 ## Browser session identity
 

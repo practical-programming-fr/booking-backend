@@ -18,6 +18,7 @@ import {
 } from "../lib/inventory.js";
 import { priceJitter } from "../lib/pricing.js";
 import { isoDate, startOfUtcDay } from "../lib/seed-date.js";
+import { seedDisruptionScenario } from "./disruption-seed.js";
 
 const SEED_LOCK_KEY = 1_541_001;
 
@@ -1020,6 +1021,7 @@ export async function seedDatabase(sql: postgres.Sql, options: SeedOptions): Pro
     await regenerateInventory(sql, { baseDate, seedDays });
     if (includeDemoBookings) {
       await seedDemoBookings(sql, baseDate);
+      await seedDisruptionScenario(sql, { baseDate });
     }
   } finally {
     await sql`select pg_advisory_unlock(${SEED_LOCK_KEY})`;

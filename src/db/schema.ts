@@ -91,6 +91,8 @@ export const flights = pgTable("flights", {
   arriveAt: timestamp("arrive_at", { withTimezone: true }).notNull(),
   durationMin: integer("duration_min").notNull(),
   status: text("status").notNull().default("scheduled"),
+  disruptedAt: timestamp("disrupted_at", { withTimezone: true }),
+  disruptionReason: text("disruption_reason"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -221,6 +223,20 @@ export const opsErrors = pgTable("ops_errors", {
   status: integer("status").notNull(),
   message: text("message").notNull(),
   stack: text("stack"),
+});
+
+export const opsRebookings = pgTable("ops_rebookings", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  pnr: char("pnr", { length: 6 }).notNull(),
+  passengerId: bigint("passenger_id", { mode: "number" }),
+  fromSegmentId: bigint("from_segment_id", { mode: "number" }).notNull(),
+  fromFlightId: uuid("from_flight_id"),
+  toFlightId: uuid("to_flight_id").notNull(),
+  toSegmentId: bigint("to_segment_id", { mode: "number" }),
+  cabin: char("cabin", { length: 1 }),
+  seatId: text("seat_id"),
+  fareDeltaEur: integer("fare_delta_eur").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const opsIncidents = pgTable("ops_incidents", {

@@ -47,13 +47,23 @@ export async function recomputeBookingTotals(
       0,
     ) * pax;
 
+  // Count each passenger's seat exactly once. The schema stores a single
+  // seat_id per passenger, so on a multi-segment booking (e.g. a rebooked
+  // itinerary with an onward connection) the seat matches on more than one
+  // segment's flight. `distinct on (passenger)` ordered by segment_no picks the
+  // price from the earliest matching segment, which is the leg the seat was
+  // assigned on. Single-segment bookings behave exactly as before.
   const seatSumRows = (await sql`
-    select coalesce(sum(fs.price_eur), 0)::int as seats_eur
-    from public.passengers p
-    left join public.booking_segments bs on bs.booking_pnr = p.booking_pnr
-    left join public.flight_seats fs
-      on fs.flight_id = bs.flight_id and fs.seat_id = p.seat_id
-    where p.booking_pnr = ${pnr} and p.seat_id is not null
+    select coalesce(sum(seat_price), 0)::int as seats_eur
+    from (
+      select distinct on (p.id) p.id, fs.price_eur as seat_price
+      from public.passengers p
+      join public.booking_segments bs on bs.booking_pnr = p.booking_pnr
+      join public.flight_seats fs
+        on fs.flight_id = bs.flight_id and fs.seat_id = p.seat_id
+      where p.booking_pnr = ${pnr} and p.seat_id is not null
+      order by p.id, bs.segment_no asc
+    ) t
   `) as unknown as Array<{ seats_eur: number }>;
   const seatsEur = seatSumRows[0]?.seats_eur ?? 0;
 

@@ -13,6 +13,7 @@ import { bookingsRoutes } from "./routes/bookings.js";
 import { meRoutes } from "./routes/me.js";
 import { cronRoutes } from "./routes/cron.js";
 import { opsRoutes } from "./routes/ops.js";
+import { opsDisruptionRoutes } from "./routes/ops-disruption.js";
 import { mcpRoutes } from "./routes/mcp.js";
 
 export function buildApp(): Hono {
@@ -91,6 +92,7 @@ export function buildApp(): Hono {
   v1.route("/me", meRoutes());
   v1.route("/_cron", cronRoutes());
   v1.route("/_ops", opsRoutes());
+  v1.route("/ops", opsDisruptionRoutes());
 
   app.route("/v1", v1);
   app.route("/mcp", mcpRoutes({
