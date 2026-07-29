@@ -265,7 +265,7 @@ jobs:
             echo "VERCEL_REDEPLOY_STATUS=failed (HTTP ${redeploy_http})" >> "$GITHUB_ENV"
           fi
 
-- name: Wait for the baseline deploy to go live
+      - name: Wait for the baseline deploy to go live
         if: success() && env.armed == 'true'
         run: |
           set -euo pipefail
