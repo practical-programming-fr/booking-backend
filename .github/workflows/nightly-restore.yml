@@ -1,7 +1,9 @@
 name: Nightly restore
 
-# Restores this demo repo to a known-good baseline every night, so anything
-# merged or changed during the day's demos is undone. Two layers:
+# Restores this demo repo to a known-good baseline when dispatched (the
+# flylo-air/nightly-reset orchestrator owns the clock and fans out
+# workflow_dispatch at 11pm ET). Anything merged or changed during the day's
+# demos is undone. Two layers:
 #   1. CODE: force-reset main to the `demo-baseline` tag (deterministic, exact).
 #   2. DATA: after the reset redeploys, re-run migrations + reseed, then reset
 #      the runtime ops state (outage/spike flags off, errors cleared).
@@ -18,8 +20,6 @@ name: Nightly restore
 # Promote a new baseline with the separate "Promote demo baseline" workflow.
 
 on:
-  schedule:
-    - cron: "0 8 * * *"   # 08:00 UTC nightly (before the 09:00 demo-cleanup)
   workflow_dispatch:
     inputs:
       force:
