@@ -38,6 +38,8 @@ jobs:
       - name: Retag demo-baseline to current main
         run: |
           set -euo pipefail
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
           MAIN_SHA="$(git rev-parse origin/main)"
           echo "Promoting ${BASELINE_TAG} to main ${MAIN_SHA}"
           git tag -fa "${BASELINE_TAG}" "${MAIN_SHA}" -m "Promote demo baseline to ${MAIN_SHA}"
