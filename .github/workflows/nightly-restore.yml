@@ -70,12 +70,24 @@ jobs:
             exit 1
           fi
 
+      - name: Preflight - require FLYLO_ADMIN_PAT when armed
+        if: success() && env.armed == 'true'
+        env:
+          FLYLO_ADMIN_PAT: ${{ secrets.FLYLO_ADMIN_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FLYLO_ADMIN_PAT}" ]; then
+            echo "::error::FLYLO_ADMIN_PAT secret is empty. Set it to an org-owner fine-grained PAT with Contents/Actions/Workflows R/W so force-push can bypass branch protection."
+            exit 1
+          fi
+
       - name: Checkout (full history + tags)
         if: success() && env.armed == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
+          token: ${{ secrets.FLYLO_ADMIN_PAT }}
 
       - name: Resolve baseline and back up current main
         if: success() && env.armed == 'true'
