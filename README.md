@@ -234,6 +234,19 @@ instantly. State lives in the `ops_flags`, `ops_errors`, and
 `demo`-labelled fix PRs and resets the runtime nightly. Full runbook:
 `flylo-air/docs` → `demo-3am-outage.md`.
 
+Presenters (or their agents) can arm a **scoped, per-person** version of the
+outage without opening `/ops` or handling `OPS_SHARED_SECRET`, via two MCP tools
+on the booking MCP server: `start_demo_outage` and `clear_demo_outage`. A scoped
+outage breaks the booking site for one demo session only (keyed off the
+`x-demo-session` identity / `?demo=<sessionId>` URL), so multiple presenters can
+each hold their own outage at once while everyone else stays healthy. The tools
+run server-side, reuse the existing scoped session machinery
+(`public.ops_demo_sessions` via `/v1/_ops/demo-sessions`), inject the ops secret
+themselves, and never flip the global `fare_adjustment_v2` flag. `start` returns
+the `demoSessionId`, browser-openable booking and crew NOC links, and a TTL
+(default 20 minutes). See `docs/mcp.md` for details. The `/ops` console remains
+the click-along path for the global outage.
+
 A second, benign scenario rides alongside the outage: a simulated traffic
 spike behind the `traffic_spike_sim` ops flag. It is purely informational and
 is never read on any request or pricing path, so enabling it keeps the booking

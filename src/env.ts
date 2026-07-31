@@ -58,6 +58,32 @@ const envSchema = z
     // commit it.
     OPS_AGENT_TOKEN: z.string().min(1).optional(),
 
+    // Shared secret guarding the /v1/_ops incident console. When set
+    // (production), every /v1/_ops route requires
+    // `Authorization: Bearer <OPS_SHARED_SECRET>`. Unset in local dev so the
+    // console (and the scoped demo-outage MCP tools) work without ceremony. The
+    // scoped demo-outage MCP tools read this server-side and inject it
+    // themselves when calling the internal ops session API, so the calling
+    // agent never needs the secret. Provide as a platform secret; never commit
+    // it and never return it in a tool response or log.
+    OPS_SHARED_SECRET: z.string().min(1).optional(),
+
+    // Public web origins used only to build human-openable demo links in the
+    // scoped demo-outage MCP tool responses (a booking search URL and the crew
+    // NOC URL, each carrying `?demo=<sessionId>`). Defaults match the FlyLo demo
+    // domains; override per environment if the hostnames differ. These are
+    // public URLs, not secrets.
+    DEMO_BOOKING_WEB_URL: z
+      .string()
+      .url()
+      .optional()
+      .default("https://book.flylo-air.com"),
+    DEMO_CREW_WEB_URL: z
+      .string()
+      .url()
+      .optional()
+      .default("https://crew.flylo-air.com"),
+
     // Jira Cloud integration for the request_marketing_change MCP tool. All
     // optional: when any are missing the tool degrades gracefully and reports
     // that Jira is not configured, so local dev and the build work without

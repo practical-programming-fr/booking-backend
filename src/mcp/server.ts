@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -6,11 +7,20 @@ import { createMarketingIssue } from "../lib/jira.js";
 
 export type InternalFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
+// Default TTL (minutes) for a scoped demo outage armed via start_demo_outage.
+// Matches the backend DEMO_SESSION_TTL_SECONDS default (1200s = 20 minutes) and
+// is capped in the tool schema so an agent cannot arm an unbounded outage.
+const DEFAULT_DEMO_OUTAGE_TTL_MINUTES = 20;
+const MAX_DEMO_OUTAGE_TTL_MINUTES = 60;
+
 type BookingMcpServerOptions = {
   internalFetch: InternalFetch;
   env: Pick<
     Env,
     | "BOOKING_SESSION_HEADER"
+    | "OPS_SHARED_SECRET"
+    | "DEMO_BOOKING_WEB_URL"
+    | "DEMO_CREW_WEB_URL"
     | "JIRA_BASE_URL"
     | "JIRA_EMAIL"
     | "JIRA_API_TOKEN"
@@ -122,6 +132,29 @@ function sessionHeaders(
   sessionId: string,
 ): Record<string, string> {
   return { [env.BOOKING_SESSION_HEADER]: sessionId };
+}
+
+// Authorization header the scoped demo-outage tools inject when calling the
+// internal /v1/_ops session API. Read server-side from OPS_SHARED_SECRET so the
+// calling agent never has to supply the ops secret. Returns undefined in local
+// dev (secret unset), matching the open /v1/_ops behaviour there. The secret is
+// never echoed into a tool response.
+function opsAuthHeaders(
+  env: Pick<Env, "OPS_SHARED_SECRET">,
+): Record<string, string> | undefined {
+  return env.OPS_SHARED_SECRET
+    ? { Authorization: `Bearer ${env.OPS_SHARED_SECRET}` }
+    : undefined;
+}
+
+// Build a browser-openable demo link, e.g. https://book.flylo-air.com/search?demo=<id>.
+// The scoped session is selected purely by the `demo` query param, which the
+// FlyLo web apps translate into the x-demo-session header, so the URL works in a
+// normal browser with no extra headers or cookies.
+function demoUrl(base: string, path: string, sessionId: string): string {
+  const url = new URL(path, base);
+  url.searchParams.set("demo", sessionId);
+  return url.toString();
 }
 
 function getRequestHeader(extra: ToolRequestExtra, name: string): string | undefined {
@@ -508,6 +541,134 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       const result = await createMarketingIssue(input, env);
       const isError = !result.configured || Boolean(result.error);
       return jsonToolResult(result, isError);
+    },
+  );
+
+  // --- Scoped (per-person) demo outage controls ----------------------------
+  // These two tools arm and clear a SCOPED booking outage: only the caller's
+  // own demo session 500s, everyone else stays healthy. They reuse the existing
+  // scoped session machinery (public.ops_demo_sessions / x-demo-session) through
+  // the internal /v1/_ops/demo-sessions routes, and inject OPS_SHARED_SECRET
+  // server-side so the agent never handles the ops secret. They intentionally
+  // do NOT flip the global fare_adjustment_v2 flag (which would break every
+  // caller's booking); the click-along global outage stays a human /ops action.
+
+  const demoSessionIdSchema = z.string().min(1).max(200);
+
+  server.registerTool(
+    "start_demo_outage",
+    {
+      title: "Start scoped demo outage",
+      description:
+        "Arm a per-person (scoped) booking outage on a fresh demo session so " +
+        "only your own demo traffic 500s while everyone else stays healthy. " +
+        "Runs server-side against the internal ops session API; you do not pass " +
+        "any ops secret. Returns the demoSessionId, browser-openable booking " +
+        "and crew NOC links (each carrying ?demo=<sessionId>), and a TTL. This " +
+        "does NOT flip the global fare_adjustment_v2 flag, so other people's " +
+        "bookings are unaffected. Clear it early with clear_demo_outage, or let " +
+        "it lapse at expiresAt.",
+      inputSchema: z.object({
+        // Reuse an existing scoped session id (re-arm / extend it) instead of
+        // minting a new one. Omit to create a fresh session.
+        demoSessionId: demoSessionIdSchema.optional(),
+        // Route this session's incident alerts to a personal channel, e.g.
+        // "#incident-talal". Optional; the frontend falls back to its default.
+        slackChannel: z.string().max(200).optional(),
+        // Outage lifetime in minutes. Defaults to 20; capped at 60 so an agent
+        // cannot arm an unbounded outage.
+        ttlMinutes: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_DEMO_OUTAGE_TTL_MINUTES)
+          .optional(),
+      }),
+    },
+    async ({ demoSessionId, slackChannel, ttlMinutes }) => {
+      const sessionId = demoSessionId ?? randomUUID();
+      const ttlMin = ttlMinutes ?? DEFAULT_DEMO_OUTAGE_TTL_MINUTES;
+      const ttlSeconds = ttlMin * 60;
+
+      const response = await internalFetch(
+        "/v1/_ops/demo-sessions",
+        jsonPost({ sessionId, ttlSeconds, slackChannel }, opsAuthHeaders(env)),
+      );
+      const body = await readResponseBody(response);
+      if (!response.ok) {
+        return jsonToolResult(
+          {
+            ok: false,
+            error: "Failed to arm scoped demo outage.",
+            status: response.status,
+            detail: body,
+          },
+          true,
+        );
+      }
+
+      const session = (body as { session?: Record<string, unknown> }).session;
+      const expiresAt = (session?.expiresAt as string | undefined) ?? undefined;
+      const bookingSearchUrl = demoUrl(env.DEMO_BOOKING_WEB_URL, "/search", sessionId);
+      const crewNocUrl = demoUrl(env.DEMO_CREW_WEB_URL, "/ops", sessionId);
+
+      return jsonToolResult({
+        ok: true,
+        demoSessionId: sessionId,
+        scope: "per-session",
+        slackChannel: (session?.slackChannel as string | null) ?? slackChannel ?? null,
+        ttlMinutes: ttlMin,
+        expiresAt,
+        bookingSearchUrl,
+        crewNocUrl,
+        instructions: [
+          "Open bookingSearchUrl in a normal browser to see the scoped 500s.",
+          "Only this demo session is affected; other people booking stay healthy.",
+          "crewNocUrl opens the crew NOC scoped to the same demo session.",
+          "Clear it anytime with the clear_demo_outage tool (pass this demoSessionId), or let it lapse at expiresAt.",
+        ].join(" "),
+      });
+    },
+  );
+
+  server.registerTool(
+    "clear_demo_outage",
+    {
+      title: "Clear scoped demo outage",
+      description:
+        "Disarm a scoped (per-person) demo outage by its demoSessionId. Clears " +
+        "only that session's outage; other sessions and the global " +
+        "fare_adjustment_v2 flag are untouched. Runs server-side; you do not " +
+        "pass any ops secret.",
+      inputSchema: z.object({
+        demoSessionId: demoSessionIdSchema,
+      }),
+    },
+    async ({ demoSessionId }) => {
+      const response = await internalFetch(
+        `/v1/_ops/demo-sessions/${encodeURIComponent(demoSessionId)}`,
+        { method: "DELETE", headers: opsAuthHeaders(env) },
+      );
+      const body = await readResponseBody(response);
+      if (!response.ok) {
+        return jsonToolResult(
+          {
+            ok: false,
+            demoSessionId,
+            error: "Failed to clear scoped demo outage.",
+            status: response.status,
+            detail: body,
+          },
+          true,
+        );
+      }
+
+      return jsonToolResult({
+        ok: true,
+        demoSessionId,
+        cleared: true,
+        message: `Scoped demo outage cleared for demo session ${demoSessionId}.`,
+      });
     },
   );
 

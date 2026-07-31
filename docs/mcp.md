@@ -123,6 +123,49 @@ If `CRON_SECRET` is configured, call this tool with the MCP HTTP
 |---|---|---|---|
 | `request_marketing_change` | `title`, `description` | `promoCode`, `discountPercent`, `startsAt`, `endsAt` | Jira Cloud REST API |
 
+### Scoped demo outage
+
+| Tool | Required arguments | Optional arguments | Internal endpoint |
+|---|---|---|---|
+| `start_demo_outage` | none | `demoSessionId`, `slackChannel`, `ttlMinutes` | `POST /v1/_ops/demo-sessions` |
+| `clear_demo_outage` | `demoSessionId` | none | `DELETE /v1/_ops/demo-sessions/:demoSessionId` |
+
+These two tools arm and clear a per-person (scoped) booking outage so a
+presenter (or their agent) can break the booking site for their own demo
+session only, leaving every other caller healthy. They reuse the existing
+scoped session machinery (`public.ops_demo_sessions` plus the
+`x-demo-session` request identity) through the internal `/v1/_ops/demo-sessions`
+routes. They intentionally do NOT flip the global `fare_adjustment_v2` flag,
+which would break every caller's booking; the click-along global outage stays
+a human `/ops` action.
+
+`start_demo_outage` mints a fresh demo session id (or reuses a supplied
+`demoSessionId`), arms the scoped outage for it, and returns:
+
+- `demoSessionId`: the scoped session id (put `?demo=<demoSessionId>` on a URL
+  to join the outage in a normal browser).
+- `bookingSearchUrl`: `https://book.flylo-air.com/search?demo=<demoSessionId>`.
+- `crewNocUrl`: `https://crew.flylo-air.com/ops?demo=<demoSessionId>`.
+- `ttlMinutes` and `expiresAt`: the outage lifetime (default 20 minutes,
+  capped at 60).
+- `scope`: always `per-session`.
+- `slackChannel`: the personal channel the session's incident alerts route to,
+  or null.
+- `instructions`: short human guidance (open the booking URL to see the 500s;
+  clear with `clear_demo_outage`).
+
+`clear_demo_outage` disarms only the named session's outage; other sessions and
+the global flag are untouched.
+
+Both tools run server-side inside booking-backend. When `OPS_SHARED_SECRET` is
+configured they inject the `Authorization: Bearer <OPS_SHARED_SECRET>` header
+themselves when calling the internal `/v1/_ops` routes, so the calling agent
+never handles the ops secret and the secret is never returned in a tool
+response. The public booking and crew origins used to build the links come from
+`DEMO_BOOKING_WEB_URL` and `DEMO_CREW_WEB_URL` (defaulting to the FlyLo demo
+domains). Multiple presenters can each hold their own active session at once;
+only their own session 500s.
+
 `request_marketing_change` files a marketing-request ticket into Jira. It
 does not call an internal `/v1` endpoint; instead it uses the Jira client in
 `src/lib/jira.ts`. Jira Cloud requires the issue description in Atlassian
@@ -328,6 +371,49 @@ curl -sS http://localhost:8787/mcp \
   }'
 ```
 
+### Start a scoped demo outage
+
+```bash
+curl -sS http://localhost:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "tools/call",
+    "params": {
+      "name": "start_demo_outage",
+      "arguments": {
+        "slackChannel": "#incident-talal",
+        "ttlMinutes": 20
+      }
+    }
+  }'
+```
+
+The result includes the minted `demoSessionId`, a `bookingSearchUrl` and
+`crewNocUrl` (each carrying `?demo=<demoSessionId>`), and the TTL. Open the
+booking URL in a normal browser to see the scoped 500s.
+
+### Clear a scoped demo outage
+
+```bash
+curl -sS http://localhost:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "tools/call",
+    "params": {
+      "name": "clear_demo_outage",
+      "arguments": {
+        "demoSessionId": "<demoSessionId from start_demo_outage>"
+      }
+    }
+  }'
+```
+
 ## Implementation map
 
 - Route mount: `src/app.ts`
@@ -357,6 +443,11 @@ The MCP tests cover:
 - transport header validation.
 - tool-call forwarding of `x-booking-session`.
 - tool-call forwarding of `Authorization` for the maintenance sweep.
+- `start_demo_outage` / `clear_demo_outage`: arming returns a session id plus
+  the browser-openable links, TTL handling and reuse of a supplied
+  `demoSessionId`, server-side `OPS_SHARED_SECRET` injection, clearing the named
+  session, backend-failure surfacing, and an end-to-end arm/clear through the
+  `/mcp` route.
 - `request_marketing_change` graceful degradation when Jira is not
   configured. The Jira client itself (ADF body shape, Basic auth header, and
   the not-configured path) is unit-tested with `fetch` mocked in

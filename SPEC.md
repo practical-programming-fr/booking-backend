@@ -45,6 +45,11 @@ All read from `process.env`; see `.env.example`.
 | `JIRA_API_TOKEN` | optional; Atlassian API token (Basic auth), secret |
 | `JIRA_PROJECT_KEY` | optional; project key marketing tickets are filed into |
 | `OPS_AGENT_TOKEN` | optional; bearer token gating the `/v1/ops` disruption endpoints for the FlyLo Ops Agent service principal |
+| `OPS_SHARED_SECRET` | optional; bearer secret gating the `/v1/_ops` incident console. The scoped demo-outage MCP tools inject it server-side |
+| `DEMO_SESSION_HEADER` | header name for the scoped (per-session) outage identity (default `x-demo-session`) |
+| `DEMO_SESSION_TTL_SECONDS` | how long an armed scoped outage session stays active (default `1200`) |
+| `DEMO_BOOKING_WEB_URL` | public booking origin for scoped demo-outage tool links (default `https://book.flylo-air.com`) |
+| `DEMO_CREW_WEB_URL` | public crew NOC origin for scoped demo-outage tool links (default `https://crew.flylo-air.com`) |
 
 The `JIRA_*` vars are all optional. The `request_marketing_change` MCP tool
 uses them to file a Jira ticket; when any is unset the tool degrades
