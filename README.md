@@ -237,15 +237,14 @@ instantly. State lives in the `ops_flags`, `ops_errors`, and
 Presenters (or their agents) can arm a **scoped, per-person** version of the
 outage without opening `/ops` or handling `OPS_SHARED_SECRET`, via two MCP tools
 on the booking MCP server: `start_demo_outage` and `clear_demo_outage`. A scoped
-outage breaks the booking site for one demo session only (keyed off the
-`x-demo-session` identity / `?demo=<sessionId>` URL), so multiple presenters can
-each hold their own outage at once while everyone else stays healthy. The tools
-run server-side, reuse the existing scoped session machinery
-(`public.ops_demo_sessions` via `/v1/_ops/demo-sessions`), inject the ops secret
-themselves, and never flip the global `fare_adjustment_v2` flag. `start` returns
-the `demoSessionId`, browser-openable booking and crew NOC links, and a TTL
-(default 20 minutes). See `docs/mcp.md` for details. The `/ops` console remains
-the click-along path for the global outage.
+outage breaks the booking site for one browser session only. `start` returns a
+one-time activation URL that binds the existing `public.ops_demo_sessions` row
+to the browser's normal `x-booking-session` identity. Search, selection, and
+checkout then stay broken through ordinary navigation without a sticky query
+parameter. The original `x-demo-session` path remains available to the Ops
+Console and crew NOC. The tools inject the ops secret server-side and never flip
+the global `fare_adjustment_v2` flag. `clear` removes only the named
+`demoSessionId`; the TTL is 20 minutes by default. See `docs/mcp.md` for details.
 
 A second, benign scenario rides alongside the outage: a simulated traffic
 spike behind the `traffic_spike_sim` ops flag. It is purely informational and

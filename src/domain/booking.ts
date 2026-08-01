@@ -76,7 +76,10 @@ export async function createDraftBooking(
   sql: postgres.Sql,
   input: CreateDraftInput,
 ): Promise<CreateDraftResult> {
-  const surchargeOn = await isOutageActiveForRequest(sql, input.demoSessionId);
+  const surchargeOn = await isOutageActiveForRequest(sql, {
+    demoSessionId: input.demoSessionId,
+    bookingSessionId: input.sessionId,
+  });
   return sql.begin(async (tx) => {
     const fareRows = (await tx`
       select ff.flight_id, ff.cabin, ff.base_eur, ff.taxes_eur, ff.surface_eur,

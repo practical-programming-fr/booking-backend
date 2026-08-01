@@ -183,13 +183,19 @@ describe("mcp route", () => {
     });
     expect(startRes.status).toBe(200);
     const startBody = (await startRes.json()) as {
-      result: { structuredContent: { demoSessionId: string; ok: boolean; bookingSearchUrl: string } };
+      result: {
+        structuredContent: {
+          demoSessionId: string;
+          ok: boolean;
+          activationUrl: string;
+        };
+      };
     };
     expect(startBody.result.structuredContent.ok).toBe(true);
     const sessionId = startBody.result.structuredContent.demoSessionId;
     expect(sessionId).toMatch(/[0-9a-f-]{36}/i);
-    expect(startBody.result.structuredContent.bookingSearchUrl).toContain(
-      `demo=${sessionId}`,
+    expect(startBody.result.structuredContent.activationUrl).toMatch(
+      /^https:\/\/book\.flylo-air\.com\/demo\/activate\?token=.+/,
     );
 
     const clearRes = await app.request("/mcp", {
@@ -331,10 +337,12 @@ describe("mcp route", () => {
       sessionId: string;
       ttlSeconds: number;
       slackChannel: string;
+      activationTokenHash: string;
     };
     expect(requestBody.ttlSeconds).toBe(15 * 60);
     expect(requestBody.slackChannel).toBe("#incident-talal");
     expect(requestBody.sessionId).toMatch(/[0-9a-f-]{36}/i);
+    expect(requestBody.activationTokenHash).toMatch(/^[a-f0-9]{64}$/);
 
     const result = (body as { result: { structuredContent: Record<string, unknown> } })
       .result.structuredContent;
@@ -343,6 +351,9 @@ describe("mcp route", () => {
     expect(result.ttlMinutes).toBe(15);
     expect(result.expiresAt).toBe(expiresAt);
     expect(result.demoSessionId).toBe(requestBody.sessionId);
+    expect(result.activationUrl).toMatch(
+      /^https:\/\/book\.flylo-air\.com\/demo\/activate\?token=.+/,
+    );
     expect(result.bookingSearchUrl).toBe(
       `https://book.flylo-air.com/search?demo=${requestBody.sessionId}`,
     );

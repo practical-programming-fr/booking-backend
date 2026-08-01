@@ -4,7 +4,11 @@ import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
 import { loadEnv } from "./env.js";
 import { getSql } from "./db/client.js";
-import { cachedGlobalOutageActive, logOpsError } from "./domain/ops.js";
+import { cachedDemoSessionIdForRequest, logOpsError } from "./domain/ops.js";
+import {
+  bookingSessionIdFrom,
+  demoSessionIdFrom,
+} from "./lib/request-session.js";
 import { healthRoutes } from "./routes/health.js";
 import { airportsRoutes } from "./routes/airports.js";
 import { routesRoutes } from "./routes/routes.js";
@@ -15,6 +19,7 @@ import { cronRoutes } from "./routes/cron.js";
 import { opsRoutes } from "./routes/ops.js";
 import { opsDisruptionRoutes } from "./routes/ops-disruption.js";
 import { mcpRoutes } from "./routes/mcp.js";
+import { demoRoutes } from "./routes/demo.js";
 
 export function buildApp(): Hono {
   const env = loadEnv();
@@ -56,9 +61,10 @@ export function buildApp(): Hono {
       // the stamp null to keep global-outage failures distinguishable from
       // scoped ones (the global incident orchestrator keys off the global flag
       // plus the null-stamped 5xx count).
-      const demoSessionId = c.req.header(env.DEMO_SESSION_HEADER.toLowerCase());
-      const stamp =
-        demoSessionId && !cachedGlobalOutageActive() ? demoSessionId : null;
+      const stamp = cachedDemoSessionIdForRequest({
+        demoSessionId: demoSessionIdFrom(c),
+        bookingSessionId: bookingSessionIdFrom(c),
+      });
       await logOpsError(getSql(), {
         method: c.req.method,
         path: c.req.path,
@@ -93,6 +99,7 @@ export function buildApp(): Hono {
   v1.route("/_cron", cronRoutes());
   v1.route("/_ops", opsRoutes());
   v1.route("/ops", opsDisruptionRoutes());
+  v1.route("/demo", demoRoutes());
 
   app.route("/v1", v1);
   app.route("/mcp", mcpRoutes({
