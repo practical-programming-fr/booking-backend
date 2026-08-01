@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Env } from "../env.js";
+import { createDemoActivationToken } from "../lib/demo-activation.js";
 import { createMarketingIssue } from "../lib/jira.js";
 
 export type InternalFetch = (path: string, init?: RequestInit) => Promise<Response>;
@@ -154,6 +155,12 @@ function opsAuthHeaders(
 function demoUrl(base: string, path: string, sessionId: string): string {
   const url = new URL(path, base);
   url.searchParams.set("demo", sessionId);
+  return url.toString();
+}
+
+function demoActivationUrl(base: string, token: string): string {
+  const url = new URL("/demo/activate", base);
+  url.searchParams.set("token", token);
   return url.toString();
 }
 
@@ -563,8 +570,9 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         "Arm a per-person (scoped) booking outage on a fresh demo session so " +
         "only your own demo traffic 500s while everyone else stays healthy. " +
         "Runs server-side against the internal ops session API; you do not pass " +
-        "any ops secret. Returns the demoSessionId, browser-openable booking " +
-        "and crew NOC links (each carrying ?demo=<sessionId>), and a TTL. This " +
+        "any ops secret. Returns a one-time activationUrl that binds the outage " +
+        "to your browser's normal booking session, plus the demoSessionId, crew " +
+        "NOC link, and TTL. This " +
         "does NOT flip the global fare_adjustment_v2 flag, so other people's " +
         "bookings are unaffected. Clear it early with clear_demo_outage, or let " +
         "it lapse at expiresAt.",
@@ -589,10 +597,19 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       const sessionId = demoSessionId ?? randomUUID();
       const ttlMin = ttlMinutes ?? DEFAULT_DEMO_OUTAGE_TTL_MINUTES;
       const ttlSeconds = ttlMin * 60;
+      const activation = createDemoActivationToken();
 
       const response = await internalFetch(
         "/v1/_ops/demo-sessions",
-        jsonPost({ sessionId, ttlSeconds, slackChannel }, opsAuthHeaders(env)),
+        jsonPost(
+          {
+            sessionId,
+            ttlSeconds,
+            slackChannel,
+            activationTokenHash: activation.tokenHash,
+          },
+          opsAuthHeaders(env),
+        ),
       );
       const body = await readResponseBody(response);
       if (!response.ok) {
@@ -611,6 +628,10 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       const expiresAt = (session?.expiresAt as string | undefined) ?? undefined;
       const bookingSearchUrl = demoUrl(env.DEMO_BOOKING_WEB_URL, "/search", sessionId);
       const crewNocUrl = demoUrl(env.DEMO_CREW_WEB_URL, "/ops", sessionId);
+      const activationUrl = demoActivationUrl(
+        env.DEMO_BOOKING_WEB_URL,
+        activation.token,
+      );
 
       return jsonToolResult({
         ok: true,
@@ -619,11 +640,12 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         slackChannel: (session?.slackChannel as string | null) ?? slackChannel ?? null,
         ttlMinutes: ttlMin,
         expiresAt,
+        activationUrl,
         bookingSearchUrl,
         crewNocUrl,
         instructions: [
-          "Open bookingSearchUrl in a normal browser to see the scoped 500s.",
-          "Only this demo session is affected; other people booking stay healthy.",
+          "Open activationUrl once in the browser you will use for the demo.",
+          "Then navigate normally; only that browser session sees the scoped 500s.",
           "crewNocUrl opens the crew NOC scoped to the same demo session.",
           "Clear it anytime with the clear_demo_outage tool (pass this demoSessionId), or let it lapse at expiresAt.",
         ].join(" "),

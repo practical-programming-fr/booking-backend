@@ -132,27 +132,30 @@ If `CRON_SECRET` is configured, call this tool with the MCP HTTP
 
 These two tools arm and clear a per-person (scoped) booking outage so a
 presenter (or their agent) can break the booking site for their own demo
-session only, leaving every other caller healthy. They reuse the existing
-scoped session machinery (`public.ops_demo_sessions` plus the
-`x-demo-session` request identity) through the internal `/v1/_ops/demo-sessions`
-routes. They intentionally do NOT flip the global `fare_adjustment_v2` flag,
-which would break every caller's booking; the click-along global outage stays
-a human `/ops` action.
+session only, leaving every other caller healthy. They reuse
+`public.ops_demo_sessions`, including its Slack routing and incident metadata,
+through the internal `/v1/_ops/demo-sessions` routes. They do not flip the
+global `fare_adjustment_v2` flag.
 
 `start_demo_outage` mints a fresh demo session id (or reuses a supplied
-`demoSessionId`), arms the scoped outage for it, and returns:
+`demoSessionId`), creates a one-time activation token, arms the scoped outage,
+and returns:
 
-- `demoSessionId`: the scoped session id (put `?demo=<demoSessionId>` on a URL
-  to join the outage in a normal browser).
-- `bookingSearchUrl`: `https://book.flylo-air.com/search?demo=<demoSessionId>`.
+- `demoSessionId`: the scoped session id used to clear this run.
+- `activationUrl`: a one-time
+  `https://book.flylo-air.com/demo/activate?token=<token>` link. Open it in the
+  browser used for the demo. The frontend binds the outage to that browser's
+  normal `x-booking-session`, removes the token from the URL, and redirects to
+  `/`.
+- `bookingSearchUrl`: the old `?demo=<demoSessionId>` booking link, kept for
+  compatibility. Prefer `activationUrl`.
 - `crewNocUrl`: `https://crew.flylo-air.com/ops?demo=<demoSessionId>`.
 - `ttlMinutes` and `expiresAt`: the outage lifetime (default 20 minutes,
   capped at 60).
 - `scope`: always `per-session`.
 - `slackChannel`: the personal channel the session's incident alerts route to,
   or null.
-- `instructions`: short human guidance (open the booking URL to see the 500s;
-  clear with `clear_demo_outage`).
+- `instructions`: short guidance for activation and cleanup.
 
 `clear_demo_outage` disarms only the named session's outage; other sessions and
 the global flag are untouched.
@@ -164,7 +167,8 @@ never handles the ops secret and the secret is never returned in a tool
 response. The public booking and crew origins used to build the links come from
 `DEMO_BOOKING_WEB_URL` and `DEMO_CREW_WEB_URL` (defaulting to the FlyLo demo
 domains). Multiple presenters can each hold their own active session at once;
-only their own session 500s.
+only their bound browser session 500s. The existing `x-demo-session` path stays
+available to the Ops Console and crew NOC.
 
 `request_marketing_change` files a marketing-request ticket into Jira. It
 does not call an internal `/v1` endpoint; instead it uses the Jira client in
@@ -391,9 +395,10 @@ curl -sS http://localhost:8787/mcp \
   }'
 ```
 
-The result includes the minted `demoSessionId`, a `bookingSearchUrl` and
-`crewNocUrl` (each carrying `?demo=<demoSessionId>`), and the TTL. Open the
-booking URL in a normal browser to see the scoped 500s.
+The result includes the minted `demoSessionId`, a one-time `activationUrl`,
+compatibility links for booking and crew, and the TTL. Open `activationUrl` in
+the browser used for the demo. After the redirect, normal navigation keeps the
+500s scoped to that browser.
 
 ### Clear a scoped demo outage
 
@@ -419,8 +424,15 @@ curl -sS http://localhost:8787/mcp \
 - Route mount: `src/app.ts`
 - MCP HTTP route: `src/routes/mcp.ts`
 - Tool registration and internal `/v1` forwarding: `src/mcp/server.ts`
+- Activation route: `src/routes/demo.ts`
+- Scoped session storage, binding, cache, and request guard: `src/domain/ops.ts`
+- Activation token hashing: `src/lib/demo-activation.ts`
+- Browser-binding migration:
+  `supabase/migrations/20260801143000_ops_demo_session_booking_bind.sql`
 - Jira client for `request_marketing_change`: `src/lib/jira.ts`
 - Route/tool-call tests: `tests/mcp-routes.test.ts`
+- Activation and scoped-session tests: `tests/demo-activation-routes.test.ts`,
+  `tests/demo-sessions.test.ts`
 - Jira client tests: `tests/jira.test.ts`
 - Existing backend API routes: `src/routes/*.ts`
 
@@ -443,8 +455,8 @@ The MCP tests cover:
 - transport header validation.
 - tool-call forwarding of `x-booking-session`.
 - tool-call forwarding of `Authorization` for the maintenance sweep.
-- `start_demo_outage` / `clear_demo_outage`: arming returns a session id plus
-  the browser-openable links, TTL handling and reuse of a supplied
+- `start_demo_outage` / `clear_demo_outage`: arming returns a session id and
+  one-time activation URL, TTL handling and reuse of a supplied
   `demoSessionId`, server-side `OPS_SHARED_SECRET` injection, clearing the named
   session, backend-failure surfacing, and an end-to-end arm/clear through the
   `/mcp` route.

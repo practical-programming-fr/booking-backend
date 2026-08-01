@@ -68,11 +68,10 @@ const envSchema = z
     // it and never return it in a tool response or log.
     OPS_SHARED_SECRET: z.string().min(1).optional(),
 
-    // Public web origins used only to build human-openable demo links in the
-    // scoped demo-outage MCP tool responses (a booking search URL and the crew
-    // NOC URL, each carrying `?demo=<sessionId>`). Defaults match the FlyLo demo
-    // domains; override per environment if the hostnames differ. These are
-    // public URLs, not secrets.
+    // Public web origins used to build the browser activation URL and the
+    // backward-compatible booking and crew demo links returned by MCP.
+    // Defaults match the FlyLo demo domains; override per environment if the
+    // hostnames differ. These are public URLs, not secrets.
     DEMO_BOOKING_WEB_URL: z
       .string()
       .url()

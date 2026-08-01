@@ -40,6 +40,7 @@ const startDemoSessionSchema = z.object({
   // previous behaviour: no Slack channel, full arc.
   slackChannel: z.string().max(200).optional(),
   runFullArc: z.boolean().optional(),
+  activationTokenHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 });
 
 const createIncidentSchema = z.object({
@@ -110,10 +111,17 @@ export function opsRoutes(): Hono {
   });
 
   app.post("/demo-sessions", zValidator("json", startDemoSessionSchema), async (c) => {
-    const { sessionId, ttlSeconds, slackChannel, runFullArc } = c.req.valid("json");
+    const {
+      sessionId,
+      ttlSeconds,
+      slackChannel,
+      runFullArc,
+      activationTokenHash,
+    } = c.req.valid("json");
     const session = await startDemoSession(getSql(), sessionId, ttlSeconds, {
       slackChannel: slackChannel ?? null,
       runFullArc: runFullArc ?? true,
+      activationTokenHash: activationTokenHash ?? null,
     });
     // `id` alias mirrors GET so the created object and listed objects match.
     return c.json({ session: { id: session.sessionId, ...session } }, 201);

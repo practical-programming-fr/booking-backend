@@ -9,6 +9,7 @@
 
 import type postgres from "postgres";
 import { loadEnv } from "../env.js";
+import { hashDemoActivationToken } from "../lib/demo-activation.js";
 
 export const FARE_ADJUSTMENT_FLAG = "fare_adjustment_v2";
 
@@ -61,6 +62,8 @@ export type DemoSession = {
   // PR) vs a quiet, visual-outage-only session. Defaults to true so existing
   // rows and callers keep the current full-arc behaviour.
   runFullArc: boolean;
+  boundBookingSessionId: string | null;
+  activatedAt: string | null;
   createdAt: string;
   expiresAt: string;
 };
@@ -122,6 +125,8 @@ function mapDemoSession(row: {
   kind: string;
   slack_channel?: string | null;
   run_full_arc?: boolean | null;
+  bound_booking_session_id?: string | null;
+  activated_at?: Date | null;
   created_at: Date;
   expires_at: Date;
 }): DemoSession {
@@ -131,6 +136,8 @@ function mapDemoSession(row: {
     // Fail safe to null / true if the columns are missing (pre-migration).
     slackChannel: row.slack_channel ?? null,
     runFullArc: row.run_full_arc ?? true,
+    boundBookingSessionId: row.bound_booking_session_id ?? null,
+    activatedAt: row.activated_at?.toISOString() ?? null,
     createdAt: row.created_at.toISOString(),
     expiresAt: row.expires_at.toISOString(),
   };
@@ -145,6 +152,8 @@ export type StartDemoSessionOptions = {
   slackChannel?: string | null;
   // Whether THIS session runs the full incident arc. Defaults to true.
   runFullArc?: boolean;
+  // SHA-256 of a one-time browser activation token. Only MCP supplies it.
+  activationTokenHash?: string | null;
 };
 
 // Arm a scoped outage for `sessionId`, expiring `ttlSeconds` from now. Upserts
@@ -161,27 +170,58 @@ export async function startDemoSession(
     ttlSeconds && ttlSeconds > 0 ? ttlSeconds : loadEnv().DEMO_SESSION_TTL_SECONDS;
   const slackChannel = options?.slackChannel ?? null;
   const runFullArc = options?.runFullArc ?? true;
+  const activationTokenHash = options?.activationTokenHash ?? null;
   try {
     const rows = (await sql`
-      insert into public.ops_demo_sessions (session_id, kind, slack_channel, run_full_arc, expires_at)
+      insert into public.ops_demo_sessions (
+        session_id,
+        kind,
+        slack_channel,
+        run_full_arc,
+        activation_token_hash,
+        expires_at
+      )
       values (
         ${sessionId},
         ${DEMO_SESSION_OUTAGE_KIND},
         ${slackChannel},
         ${runFullArc},
+        ${activationTokenHash},
         now() + (${ttl} || ' seconds')::interval
       )
       on conflict (session_id) do update
         set expires_at = excluded.expires_at,
             kind = excluded.kind,
             slack_channel = excluded.slack_channel,
-            run_full_arc = excluded.run_full_arc
-      returning session_id, kind, slack_channel, run_full_arc, created_at, expires_at
+            run_full_arc = excluded.run_full_arc,
+            activation_token_hash = coalesce(
+              excluded.activation_token_hash,
+              public.ops_demo_sessions.activation_token_hash
+            ),
+            bound_booking_session_id = case
+              when excluded.activation_token_hash is not null then null
+              else public.ops_demo_sessions.bound_booking_session_id
+            end,
+            activated_at = case
+              when excluded.activation_token_hash is not null then null
+              else public.ops_demo_sessions.activated_at
+            end
+      returning
+        session_id,
+        kind,
+        slack_channel,
+        run_full_arc,
+        bound_booking_session_id,
+        activated_at,
+        created_at,
+        expires_at
     `) as unknown as Array<{
       session_id: string;
       kind: string;
       slack_channel: string | null;
       run_full_arc: boolean;
+      bound_booking_session_id: string | null;
+      activated_at: Date | null;
       created_at: Date;
       expires_at: Date;
     }>;
@@ -199,9 +239,127 @@ export async function startDemoSession(
     kind: DEMO_SESSION_OUTAGE_KIND,
     slackChannel,
     runFullArc,
+    boundBookingSessionId: null,
+    activatedAt: null,
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + ttl * 1000).toISOString(),
   };
+}
+
+export type ActivatedDemoSession = {
+  demoSessionId: string;
+  bookingSessionId: string;
+  expiresAt: string;
+};
+
+export class DemoSessionActivationError extends Error {
+  constructor(
+    public readonly status: 404 | 409 | 410,
+    message: string,
+    public readonly code:
+      | "activation_not_found"
+      | "activation_expired"
+      | "activation_used",
+  ) {
+    super(message);
+    this.name = "DemoSessionActivationError";
+  }
+}
+
+export async function bindDemoSessionToBooking(
+  sql: postgres.Sql,
+  input: { activationToken: string; bookingSessionId: string },
+): Promise<ActivatedDemoSession> {
+  const activationTokenHash = hashDemoActivationToken(input.activationToken);
+
+  const activated = await sql.begin(async (tx) => {
+    // Serialize activation attempts for one browser. This lets a new scoped
+    // demo replace an older binding without racing the unique index.
+    await tx`
+      select pg_advisory_xact_lock(hashtext(${input.bookingSessionId}))
+    `;
+
+    const rows = (await tx`
+      select
+        session_id,
+        bound_booking_session_id,
+        expires_at
+      from public.ops_demo_sessions
+      where activation_token_hash = ${activationTokenHash}
+      limit 1
+      for update
+    `) as unknown as Array<{
+      session_id: string;
+      bound_booking_session_id: string | null;
+      expires_at: Date;
+    }>;
+
+    const session = rows[0];
+    if (!session) {
+      throw new DemoSessionActivationError(
+        404,
+        "This demo activation link is invalid.",
+        "activation_not_found",
+      );
+    }
+    if (session.expires_at.getTime() <= Date.now()) {
+      throw new DemoSessionActivationError(
+        410,
+        "This demo activation link has expired.",
+        "activation_expired",
+      );
+    }
+    if (session.bound_booking_session_id === input.bookingSessionId) {
+      return {
+        demoSessionId: session.session_id,
+        bookingSessionId: input.bookingSessionId,
+        expiresAt: session.expires_at.toISOString(),
+      };
+    }
+    if (session.bound_booking_session_id) {
+      throw new DemoSessionActivationError(
+        409,
+        "This demo activation link was already used in another browser.",
+        "activation_used",
+      );
+    }
+
+    await tx`
+      update public.ops_demo_sessions
+      set bound_booking_session_id = null,
+          activated_at = null
+      where bound_booking_session_id = ${input.bookingSessionId}
+        and session_id <> ${session.session_id}
+    `;
+
+    const updated = (await tx`
+      update public.ops_demo_sessions
+      set bound_booking_session_id = ${input.bookingSessionId},
+          activated_at = now()
+      where session_id = ${session.session_id}
+        and bound_booking_session_id is null
+        and expires_at > now()
+      returning session_id, expires_at
+    `) as unknown as Array<{ session_id: string; expires_at: Date }>;
+
+    const row = updated[0];
+    if (!row) {
+      throw new DemoSessionActivationError(
+        409,
+        "This demo activation link has already been used.",
+        "activation_used",
+      );
+    }
+
+    return {
+      demoSessionId: row.session_id,
+      bookingSessionId: input.bookingSessionId,
+      expiresAt: row.expires_at.toISOString(),
+    };
+  });
+
+  invalidateOpsCache();
+  return activated;
 }
 
 // End a scoped outage. No-op if the row (or table) is absent.
@@ -224,17 +382,37 @@ export async function endDemoSession(
 // helper feeding the in-memory cache and isOutageActiveForRequest, so it stays
 // a lean, ids-only read (unchanged shape). Callers that need the per-session
 // metadata use listActiveDemoSessionsDetailed instead.
-export async function listActiveDemoSessions(
+type ActiveDemoSessionBinding = {
+  sessionId: string;
+  boundBookingSessionId: string | null;
+};
+
+async function listActiveDemoSessionBindings(
   sql: postgres.Sql,
-): Promise<string[]> {
+): Promise<ActiveDemoSessionBinding[]> {
   try {
     const rows = (await sql`
-      select session_id from public.ops_demo_sessions where expires_at > now()
-    `) as unknown as Array<{ session_id: string }>;
-    return rows.map((row) => row.session_id);
+      select session_id, bound_booking_session_id
+      from public.ops_demo_sessions
+      where expires_at > now()
+    `) as unknown as Array<{
+      session_id: string;
+      bound_booking_session_id: string | null;
+    }>;
+    return rows.map((row) => ({
+      sessionId: row.session_id,
+      boundBookingSessionId: row.bound_booking_session_id ?? null,
+    }));
   } catch {
     return [];
   }
+}
+
+export async function listActiveDemoSessions(
+  sql: postgres.Sql,
+): Promise<string[]> {
+  const bindings = await listActiveDemoSessionBindings(sql);
+  return bindings.map((binding) => binding.sessionId);
 }
 
 // The full active (unexpired) scoped-outage sessions, including the per-session
@@ -248,7 +426,15 @@ export async function listActiveDemoSessionsDetailed(
 ): Promise<DemoSession[]> {
   try {
     const rows = (await sql`
-      select session_id, kind, slack_channel, run_full_arc, created_at, expires_at
+      select
+        session_id,
+        kind,
+        slack_channel,
+        run_full_arc,
+        bound_booking_session_id,
+        activated_at,
+        created_at,
+        expires_at
       from public.ops_demo_sessions
       where expires_at > now()
       order by created_at desc
@@ -257,6 +443,8 @@ export async function listActiveDemoSessionsDetailed(
       kind: string;
       slack_channel: string | null;
       run_full_arc: boolean;
+      bound_booking_session_id: string | null;
+      activated_at: Date | null;
       created_at: Date;
       expires_at: Date;
     }>;
@@ -278,6 +466,7 @@ type OpsCacheState = {
   fetchedAt: number;
   globalOutage: boolean;
   activeSessions: Set<string>;
+  boundBookingSessions: Map<string, string>;
 };
 
 let opsCache: OpsCacheState | null = null;
@@ -290,9 +479,24 @@ export function invalidateOpsCache(): void {
 }
 
 async function refreshOpsCache(sql: postgres.Sql): Promise<OpsCacheState> {
-  const globalOutage = await getFlag(sql, FARE_ADJUSTMENT_FLAG);
-  const activeSessions = new Set(await listActiveDemoSessions(sql));
-  opsCache = { fetchedAt: Date.now(), globalOutage, activeSessions };
+  const [globalOutage, bindings] = await Promise.all([
+    getFlag(sql, FARE_ADJUSTMENT_FLAG),
+    listActiveDemoSessionBindings(sql),
+  ]);
+  const activeSessions = new Set(bindings.map((binding) => binding.sessionId));
+  const boundBookingSessions = new Map(
+    bindings.flatMap((binding) =>
+      binding.boundBookingSessionId
+        ? [[binding.boundBookingSessionId, binding.sessionId] as const]
+        : [],
+    ),
+  );
+  opsCache = {
+    fetchedAt: Date.now(),
+    globalOutage,
+    activeSessions,
+    boundBookingSessions,
+  };
   return opsCache;
 }
 
@@ -309,16 +513,40 @@ async function getOpsCache(sql: postgres.Sql): Promise<OpsCacheState> {
 // 500s). Uses the cached state, so it does not hit the DB within the TTL.
 export async function isOutageActiveForRequest(
   sql: postgres.Sql,
-  demoSessionId: string | undefined,
+  identity: {
+    demoSessionId?: string;
+    bookingSessionId?: string;
+  },
 ): Promise<boolean> {
   const cache = await getOpsCache(sql);
   if (cache.globalOutage) {
     return true;
   }
-  if (demoSessionId && cache.activeSessions.has(demoSessionId)) {
+  if (identity.demoSessionId && cache.activeSessions.has(identity.demoSessionId)) {
+    return true;
+  }
+  if (
+    identity.bookingSessionId &&
+    cache.boundBookingSessions.has(identity.bookingSessionId)
+  ) {
     return true;
   }
   return false;
+}
+
+export function cachedDemoSessionIdForRequest(identity: {
+  demoSessionId?: string;
+  bookingSessionId?: string;
+}): string | null {
+  if (!opsCache || opsCache.globalOutage) {
+    return null;
+  }
+  if (identity.demoSessionId && opsCache.activeSessions.has(identity.demoSessionId)) {
+    return identity.demoSessionId;
+  }
+  return identity.bookingSessionId
+    ? opsCache.boundBookingSessions.get(identity.bookingSessionId) ?? null
+    : null;
 }
 
 // The last-known global outage flag state from the cache, without a DB hit.

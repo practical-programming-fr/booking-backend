@@ -1,9 +1,7 @@
-import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { getSql } from "../db/client.js";
-import { loadEnv } from "../env.js";
 import {
   assignMeals,
   createDraftBooking,
@@ -15,8 +13,10 @@ import { assignSeats } from "../domain/seats.js";
 import { confirmPayment, createPaymentIntent, cancelBooking } from "../domain/payments.js";
 import { setBookingPromo } from "../domain/promo.js";
 import { loadBooking } from "../domain/loader.js";
-
-const sessionIdSchema = z.string().uuid("x-booking-session must be a UUID");
+import {
+  bookingSessionIdFrom as getSessionId,
+  demoSessionIdFrom,
+} from "../lib/request-session.js";
 
 const createSchema = z.object({
   flightId: z.string().uuid(),
@@ -91,24 +91,6 @@ const confirmSchema = z.object({
   }),
 });
 
-function getSessionId(c: Context): string | null {
-  const env = loadEnv();
-  const headerName = env.BOOKING_SESSION_HEADER.toLowerCase();
-  const raw = c.req.header(headerName);
-  if (!raw) return null;
-  const parsed = sessionIdSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
-
-// The scoped-outage session id forwarded in the demo-session header (if any).
-// Mirrors how getSessionId reads the booking-session header, but is a free-form
-// identifier (not required to be a UUID) matched against active scoped sessions.
-function getDemoSessionId(c: Context): string | undefined {
-  const env = loadEnv();
-  const raw = c.req.header(env.DEMO_SESSION_HEADER.toLowerCase());
-  return raw && raw.length > 0 ? raw : undefined;
-}
-
 function handleDomainError(err: unknown):
   | { status: number; body: { error: { code: string; message: string; status: number } } }
   | null {
@@ -143,7 +125,7 @@ export function bookingsRoutes(): Hono {
         pax: c.req.valid("json").pax,
         contact: c.req.valid("json").contact,
         sessionId,
-        demoSessionId: getDemoSessionId(c),
+        demoSessionId: demoSessionIdFrom(c),
       });
       if (c.req.valid("json").contact) {
         await updateContact(sql, result.pnr, c.req.valid("json").contact!);
