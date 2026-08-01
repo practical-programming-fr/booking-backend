@@ -157,6 +157,13 @@ and returns:
   or null.
 - `instructions`: short guidance for activation and cleanup.
 
+For parallel demos, each presenter creates or chooses a Slack channel, invites
+the FlyLo Ops app, then asks Cursor to start the outage in that channel. Cursor
+passes the channel name or ID as `slackChannel`. Detection is the root message;
+the agent summary, fix PR, and recovery are replies in that thread. Each
+presenter still receives a separate browser activation and `demoSessionId`, so
+both the outage and its incident conversation remain isolated.
+
 `clear_demo_outage` disarms only the named session's outage; other sessions and
 the global flag are untouched.
 

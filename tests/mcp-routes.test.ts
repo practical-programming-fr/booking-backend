@@ -149,6 +149,11 @@ describe("mcp route", () => {
     expect(startDemoOutage?.inputSchema?.properties).not.toHaveProperty(
       "authorization",
     );
+    expect(
+      startDemoOutage?.inputSchema?.properties?.slackChannel,
+    ).toMatchObject({
+      description: expect.stringContaining("FlyLo Ops"),
+    });
 
     const createBooking = body.result.tools.find((tool) => tool.name === "create_booking");
     expect(createBooking?.inputSchema?.properties).not.toHaveProperty("sessionId");
@@ -360,6 +365,7 @@ describe("mcp route", () => {
     expect(result.crewNocUrl).toBe(
       `https://crew.flylo-air.com/ops?demo=${requestBody.sessionId}`,
     );
+    expect(result.instructions).toContain("#incident-talal");
     // No secret leaks into the response.
     expect(JSON.stringify(result)).not.toMatch(/OPS_SHARED_SECRET|Bearer/i);
   });

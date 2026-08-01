@@ -572,7 +572,8 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         "Runs server-side against the internal ops session API; you do not pass " +
         "any ops secret. Returns a one-time activationUrl that binds the outage " +
         "to your browser's normal booking session, plus the demoSessionId, crew " +
-        "NOC link, and TTL. This " +
+        "NOC link, and TTL. When the presenter names a Slack channel, pass it as " +
+        "slackChannel so the full incident arc stays in that channel. This " +
         "does NOT flip the global fare_adjustment_v2 flag, so other people's " +
         "bookings are unaffected. Clear it early with clear_demo_outage, or let " +
         "it lapse at expiresAt.",
@@ -582,7 +583,17 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         demoSessionId: demoSessionIdSchema.optional(),
         // Route this session's incident alerts to a personal channel, e.g.
         // "#incident-talal". Optional; the frontend falls back to its default.
-        slackChannel: z.string().max(200).optional(),
+        slackChannel: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .describe(
+            "Slack channel name (for example #talal-flylo-demo) or channel ID " +
+              "where FlyLo Ops should post this run. The FlyLo Ops app must " +
+              "already be invited to private channels.",
+          )
+          .optional(),
         // Outage lifetime in minutes. Defaults to 20; capped at 60 so an agent
         // cannot arm an unbounded outage.
         ttlMinutes: z
@@ -626,6 +637,8 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
 
       const session = (body as { session?: Record<string, unknown> }).session;
       const expiresAt = (session?.expiresAt as string | undefined) ?? undefined;
+      const resolvedSlackChannel =
+        (session?.slackChannel as string | null) ?? slackChannel ?? null;
       const bookingSearchUrl = demoUrl(env.DEMO_BOOKING_WEB_URL, "/search", sessionId);
       const crewNocUrl = demoUrl(env.DEMO_CREW_WEB_URL, "/ops", sessionId);
       const activationUrl = demoActivationUrl(
@@ -637,7 +650,7 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         ok: true,
         demoSessionId: sessionId,
         scope: "per-session",
-        slackChannel: (session?.slackChannel as string | null) ?? slackChannel ?? null,
+        slackChannel: resolvedSlackChannel,
         ttlMinutes: ttlMin,
         expiresAt,
         activationUrl,
@@ -646,6 +659,9 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         instructions: [
           "Open activationUrl once in the browser you will use for the demo.",
           "Then navigate normally; only that browser session sees the scoped 500s.",
+          resolvedSlackChannel
+            ? `FlyLo Ops will keep this incident in ${resolvedSlackChannel}; make sure the app is invited there.`
+            : "Incident updates will use the default FlyLo Ops Slack channel.",
           "crewNocUrl opens the crew NOC scoped to the same demo session.",
           "Clear it anytime with the clear_demo_outage tool (pass this demoSessionId), or let it lapse at expiresAt.",
         ].join(" "),

@@ -244,7 +244,11 @@ checkout then stay broken through ordinary navigation without a sticky query
 parameter. The original `x-demo-session` path remains available to the Ops
 Console and crew NOC. The tools inject the ops secret server-side and never flip
 the global `fare_adjustment_v2` flag. `clear` removes only the named
-`demoSessionId`; the TTL is 20 minutes by default. See `docs/mcp.md` for details.
+`demoSessionId`; the TTL is 20 minutes by default. Presenters running in
+parallel should pass their own Slack channel as
+`slackChannel` after inviting the FlyLo Ops app. Each run then gets an isolated
+browser outage and an isolated Slack incident thread. See `docs/mcp.md` for
+details.
 
 A second, benign scenario rides alongside the outage: a simulated traffic
 spike behind the `traffic_spike_sim` ops flag. It is purely informational and
