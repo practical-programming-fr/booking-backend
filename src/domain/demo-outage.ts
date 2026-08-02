@@ -410,7 +410,10 @@ export async function armOpsDemoOutage(
           run_full_arc = excluded.run_full_arc,
           status = 'active',
           cleared_at = null,
+          booking_session_id = null,
           expires_at = excluded.expires_at
+      where public.ops_demo_outages.run_handle_hash is null
+        and public.ops_demo_outages.activation_token_hash is null
     returning id, status, slack_channel, run_full_arc, booking_session_id,
       activated_at, created_at, expires_at
   `) as unknown as Array<RunRow>;
