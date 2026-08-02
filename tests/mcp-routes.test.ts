@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
   DemoOutageTriggerError,
+  type ClearedDemoOutage,
   type DemoOutage,
   type TriggeredDemoOutage,
 } from "../src/domain/demo-outage.js";
@@ -24,6 +25,7 @@ const mcpHeaders = {
 
 const DEMO_SESSION_ID = "22222222-2222-4222-8222-222222222222";
 const BOOKING_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+const RUN_HANDLE = "test-run-handle-1234567890";
 
 function createStatefulDemoOutages() {
   let prepared: DemoOutage | null = null;
@@ -39,6 +41,7 @@ function createStatefulDemoOutages() {
       prepared = {
         demoSessionId: DEMO_SESSION_ID,
         activationToken: "test-activation-token",
+        runHandle: RUN_HANDLE,
         expiresAt: "2026-08-01T14:00:00.000Z",
         ttlMinutes: input.ttlMinutes ?? 20,
       };
@@ -53,11 +56,11 @@ function createStatefulDemoOutages() {
       }
       bound = true;
     },
-    trigger: async (demoSessionId: string): Promise<TriggeredDemoOutage> => {
-      if (!prepared || prepared.demoSessionId !== demoSessionId || cleared) {
+    trigger: async (runHandle: string): Promise<TriggeredDemoOutage> => {
+      if (!prepared || prepared.runHandle !== runHandle || cleared) {
         throw new DemoOutageTriggerError(
           "outage_not_found",
-          "No scoped demo outage matched that id.",
+          "No scoped demo outage matched that run handle.",
         );
       }
       if (!bound) {
@@ -74,22 +77,18 @@ function createStatefulDemoOutages() {
       }
       active = true;
       return {
-        demoSessionId,
+        demoSessionId: prepared.demoSessionId,
         bookingSessionId: BOOKING_SESSION_ID,
         expiresAt: prepared.expiresAt,
       };
     },
-    clear: async (demoSessionId: string): Promise<boolean> => {
-      if (!prepared || prepared.demoSessionId !== demoSessionId || cleared) {
-        return false;
-      }
-      if (!bound && !active) {
-        cleared = true;
-        return true;
+    clear: async (runHandle: string): Promise<ClearedDemoOutage | null> => {
+      if (!prepared || prepared.runHandle !== runHandle || cleared) {
+        return null;
       }
       cleared = true;
       active = false;
-      return true;
+      return { demoSessionId: prepared.demoSessionId };
     },
   };
 }
@@ -204,7 +203,7 @@ describe("mcp route", () => {
     expect(toolNames).toContain("release_expired_holds");
     expect(toolNames).toContain("request_marketing_change");
     expect(toolNames).toContain("prepare_demo_outage");
-    expect(toolNames).toContain("start_demo_outage");
+    expect(toolNames).not.toContain("start_demo_outage");
     expect(toolNames).toContain("trigger_demo_outage");
     expect(toolNames).toContain("clear_demo_outage");
 
@@ -283,6 +282,36 @@ describe("mcp route", () => {
     expect(body).toMatchObject({ result: { structuredContent: { ok: true } } });
   });
 
+  it("request_marketing_change rejects an out-of-range discount percent", async () => {
+    const { body } = await callToolWithFakeFetch("request_marketing_change", {
+      title: "Flash sale banner",
+      description: "Add a weekend flash-sale banner.",
+      discountPercent: 120,
+    });
+
+    expect(body).toMatchObject({ result: { isError: true } });
+    const text = (
+      body as { result: { content: Array<{ text: string }> } }
+    ).result.content[0]?.text;
+    expect(text).toMatch(/less than or equal to 100/i);
+  });
+
+  it("request_marketing_change rejects endsAt before startsAt", async () => {
+    const { body } = await callToolWithFakeFetch("request_marketing_change", {
+      title: "Flash sale banner",
+      description: "Add a weekend flash-sale banner.",
+      startsAt: "2026-07-13",
+      endsAt: "2026-07-11",
+    });
+
+    expect(body).toMatchObject({
+      result: {
+        isError: true,
+        structuredContent: { code: "invalid_dates" },
+      },
+    });
+  });
+
   it("request_marketing_change reports when Jira is not configured", async () => {
     const { body } = await callToolWithFakeFetch("request_marketing_change", {
       title: "Flash sale banner",
@@ -310,6 +339,7 @@ describe("mcp route", () => {
         structuredContent: {
           ok: true,
           demoSessionId: DEMO_SESSION_ID,
+          runHandle: RUN_HANDLE,
           scope: "browser-session",
           activationUrl:
             "https://book.flylo-air.com/demo/activate?token=test-activation-token",
@@ -327,30 +357,13 @@ describe("mcp route", () => {
     expect(instructions).toMatch(/trigger_demo_outage/);
   });
 
-  it("start_demo_outage remains a prepare alias", async () => {
-    const { body } = await callToolWithFakeFetch("start_demo_outage", {
-      ttlMinutes: 20,
-    });
-
-    expect(body).toMatchObject({
-      result: {
-        structuredContent: {
-          ok: true,
-          demoSessionId: DEMO_SESSION_ID,
-          activationUrl:
-            "https://book.flylo-air.com/demo/activate?token=test-activation-token",
-        },
-      },
-    });
-  });
-
   it("trigger_demo_outage fails before the browser is bound", async () => {
     const demoOutages = createStatefulDemoOutages();
     await callToolWithFakeFetch("prepare_demo_outage", { ttlMinutes: 20 }, {}, demoOutages);
 
     const { body } = await callToolWithFakeFetch(
       "trigger_demo_outage",
-      { demoSessionId: DEMO_SESSION_ID },
+      { runHandle: RUN_HANDLE },
       {},
       demoOutages,
     );
@@ -360,7 +373,6 @@ describe("mcp route", () => {
         isError: true,
         structuredContent: {
           ok: false,
-          demoSessionId: DEMO_SESSION_ID,
           code: "outage_not_bound",
         },
       },
@@ -374,7 +386,7 @@ describe("mcp route", () => {
 
     const { body } = await callToolWithFakeFetch(
       "trigger_demo_outage",
-      { demoSessionId: DEMO_SESSION_ID },
+      { runHandle: RUN_HANDLE },
       {},
       demoOutages,
     );
@@ -397,14 +409,14 @@ describe("mcp route", () => {
     demoOutages.bindForTests();
     await callToolWithFakeFetch(
       "trigger_demo_outage",
-      { demoSessionId: DEMO_SESSION_ID },
+      { runHandle: RUN_HANDLE },
       {},
       demoOutages,
     );
 
     const { calls, body } = await callToolWithFakeFetch(
       "clear_demo_outage",
-      { demoSessionId: DEMO_SESSION_ID },
+      { runHandle: RUN_HANDLE },
       {},
       demoOutages,
     );
@@ -419,5 +431,63 @@ describe("mcp route", () => {
         },
       },
     });
+  });
+});
+
+describe("mcp bearer auth (FLYLO_MCP_TOKEN)", () => {
+  // loadEnv caches per module registry, so each case rebuilds the app with a
+  // fresh registry to pick up the env change.
+  async function freshApp(token: string | undefined) {
+    vi.resetModules();
+    stubEnv();
+    if (token === undefined) {
+      delete process.env.FLYLO_MCP_TOKEN;
+    } else {
+      process.env.FLYLO_MCP_TOKEN = token;
+    }
+    const { buildApp } = await import("../src/app.js");
+    return buildApp();
+  }
+
+  const listTools = async (
+    app: Awaited<ReturnType<typeof freshApp>>,
+    headers: Record<string, string> = {},
+  ) =>
+    app.request("/mcp", {
+      method: "POST",
+      headers: { ...mcpHeaders, ...headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+
+  afterEach(async () => {
+    delete process.env.FLYLO_MCP_TOKEN;
+    vi.resetModules();
+  });
+
+  it("returns 401 without the bearer token when configured", async () => {
+    const app = await freshApp("mcp-secret");
+    const res = await listTools(app);
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { message: "Unauthorized" },
+    });
+  });
+
+  it("returns 401 for a wrong bearer token", async () => {
+    const app = await freshApp("mcp-secret");
+    const res = await listTools(app, { Authorization: "Bearer nope" });
+    expect(res.status).toBe(401);
+  });
+
+  it("serves the request with the correct bearer token", async () => {
+    const app = await freshApp("mcp-secret");
+    const res = await listTools(app, { Authorization: "Bearer mcp-secret" });
+    expect(res.status).toBe(200);
+  });
+
+  it("stays open when the token is unset", async () => {
+    const app = await freshApp(undefined);
+    const res = await listTools(app);
+    expect(res.status).toBe(200);
   });
 });

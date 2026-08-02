@@ -6,10 +6,7 @@ import {
   activateDemoOutage,
   DemoOutageActivationError,
 } from "../domain/demo-outage.js";
-import {
-  bindDemoSessionToBooking,
-  DemoSessionActivationError,
-} from "../domain/ops.js";
+import { invalidateOpsCache } from "../domain/ops.js";
 import { bookingSessionIdFrom } from "../lib/request-session.js";
 
 const activationSchema = z.object({
@@ -35,28 +32,14 @@ export function demoRoutes(): Hono {
     }
 
     try {
-      const input = {
+      const activation = await activateDemoOutage(getSql(), {
         activationToken: c.req.valid("json").token,
         bookingSessionId,
-      };
-      let activation: Awaited<ReturnType<typeof activateDemoOutage>>;
-      try {
-        activation = await activateDemoOutage(getSql(), input);
-      } catch (error) {
-        if (
-          !(error instanceof DemoOutageActivationError) ||
-          error.code !== "activation_not_found"
-        ) {
-          throw error;
-        }
-        activation = await bindDemoSessionToBooking(getSql(), input);
-      }
+      });
+      invalidateOpsCache();
       return c.json({ ok: true, ...activation });
     } catch (error) {
-      if (
-        error instanceof DemoOutageActivationError ||
-        error instanceof DemoSessionActivationError
-      ) {
+      if (error instanceof DemoOutageActivationError) {
         return c.json(
           {
             error: {

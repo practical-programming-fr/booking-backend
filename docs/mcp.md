@@ -20,6 +20,21 @@ This deployment does not use long-lived GET SSE streams or stateful DELETE
 cleanup. Each MCP request creates a fresh stateless MCP server/transport
 pair and can be handled by any Vercel Function instance.
 
+## Authentication
+
+The endpoint can be gated with the optional `FLYLO_MCP_TOKEN` env var. When
+set, every `/mcp` request must include:
+
+```http
+Authorization: Bearer <FLYLO_MCP_TOKEN>
+```
+
+Requests without it (or with a wrong token) get a 401 JSON-RPC error before
+any tool runs. When unset (local dev) the endpoint is open. Note that the
+`release_expired_holds` tool forwards the incoming `Authorization` header to
+the internal cron route, so it cannot carry a separate `CRON_SECRET` while the
+MCP gate is enabled.
+
 ## Required MCP HTTP headers
 
 MCP Streamable HTTP POST requests must include:
@@ -128,37 +143,38 @@ If `CRON_SECRET` is configured, call this tool with the MCP HTTP
 | Tool | Required arguments | Optional arguments | Internal endpoint |
 |---|---|---|---|
 | `prepare_demo_outage` | none | `ttlMinutes`, `slackChannel` | `public.ops_demo_outages` |
-| `start_demo_outage` | none | same as prepare | Alias for `prepare_demo_outage` |
-| `trigger_demo_outage` | `demoSessionId` | none | `public.ops_demo_outages` |
-| `clear_demo_outage` | `demoSessionId` | none | `public.ops_demo_outages` |
+| `trigger_demo_outage` | `runHandle` | none | `public.ops_demo_outages` |
+| `clear_demo_outage` | `runHandle` | none | `public.ops_demo_outages` |
 
-`prepare_demo_outage` creates a pending browser-scoped outage and returns a
-`demoSessionId`, expiry, and one-time `activationUrl`. Opening that URL binds
-the pending row to the browser's `x-booking-session`. Binding does not activate
-the outage. Pricing stays healthy until `trigger_demo_outage` changes the row
-from `pending` to `active`.
+An outage run is a state machine on one `ops_demo_outages` row:
+`pending` (unbound) -> `pending` (bound) -> `active` -> `cleared` or
+`expired`.
 
-`start_demo_outage` is a compatibility alias for prepare. It no longer starts
-pricing failures immediately.
+`prepare_demo_outage` creates a pending run and returns three values: a
+one-time `activationUrl` (binds the presenter browser), an opaque `runHandle`
+(shown only once; the control credential for trigger and clear, stored
+server-side as a SHA-256 hash), and a `demoSessionId` (the row UUID, used only
+for attribution in the ops console and `ops_errors`; it grants no control).
+Opening the activation URL binds the pending row to the browser's
+`x-booking-session` and supersedes any earlier live run bound to that browser.
+Binding does not activate the outage.
 
-`trigger_demo_outage` requires a bound pending row. It returns
-`outage_not_bound` if the activation URL has not been opened. Once triggered,
-pricing requests from the bound browser fail while other browsers remain
-healthy.
+`trigger_demo_outage` requires a bound pending run. It returns
+`outage_not_bound` if the activation URL has not been opened and
+`outage_not_pending` if the run was already triggered or cleared. Once
+triggered, pricing requests from the bound browser fail while other browsers
+remain healthy.
 
-`clear_demo_outage` clears only the named pending or active outage. The global
+`clear_demo_outage` clears only the run matching the handle. The global
 `fare_adjustment_v2` flag and other presenters remain unchanged. The default
 TTL is 20 minutes and the maximum is 60 minutes.
 
-Both tools run server-side inside booking-backend. When `OPS_SHARED_SECRET` is
-configured they inject the `Authorization: Bearer <OPS_SHARED_SECRET>` header
-themselves when calling the internal `/v1/_ops` routes, so the calling agent
-never handles the ops secret and the secret is never returned in a tool
-response. The public booking and crew origins used to build the links come from
-`DEMO_BOOKING_WEB_URL` and `DEMO_CREW_WEB_URL` (defaulting to the FlyLo demo
-domains). Multiple presenters can each hold their own active session at once;
-only their bound browser session 500s. The existing `x-demo-session` path stays
-available to the Ops Console and crew NOC.
+The tools run server-side inside booking-backend and never expose the ops
+shared secret. The public booking origin used to build the activation link
+comes from `DEMO_BOOKING_WEB_URL` (defaulting to the FlyLo demo domain).
+Multiple presenters can each hold their own active run at once; only their
+bound browser session 500s. The existing `x-demo-session` path stays available
+to the Ops Console and crew NOC, backed by the same `ops_demo_outages` table.
 
 `request_marketing_change` files a marketing-request ticket into Jira. It
 does not call an internal `/v1` endpoint; instead it uses the Jira client in
@@ -385,9 +401,9 @@ curl -sS http://localhost:8787/mcp \
   }'
 ```
 
-The result includes a `demoSessionId`, one-time `activationUrl`, and TTL. Open
-`activationUrl` in the presenter browser. The browser is bound but remains
-healthy.
+The result includes a `demoSessionId` (attribution only), a one-time
+`runHandle`, a one-time `activationUrl`, and TTL. Open `activationUrl` in the
+presenter browser. The browser is bound but remains healthy.
 
 ### Trigger a scoped demo outage
 
@@ -402,7 +418,7 @@ curl -sS http://localhost:8787/mcp \
     "params": {
       "name": "trigger_demo_outage",
       "arguments": {
-        "demoSessionId": "<demoSessionId from prepare_demo_outage>"
+        "runHandle": "<runHandle from prepare_demo_outage>"
       }
     }
   }'
@@ -424,7 +440,7 @@ curl -sS http://localhost:8787/mcp \
     "params": {
       "name": "clear_demo_outage",
       "arguments": {
-        "demoSessionId": "<demoSessionId from prepare_demo_outage>"
+        "runHandle": "<runHandle from prepare_demo_outage>"
       }
     }
   }'
@@ -439,12 +455,14 @@ curl -sS http://localhost:8787/mcp \
 - Outage lifecycle and activation-token hashing: `src/domain/demo-outage.ts`
 - Pricing request guard: `src/domain/ops.ts`
 - Browser-scoped outage migrations:
-  `supabase/migrations/20260801140000_ops_demo_outages.sql` and
-  `supabase/migrations/20260801150000_ops_demo_outages_bound_session_idx.sql`
+  `supabase/migrations/20260801140000_ops_demo_outages.sql`,
+  `supabase/migrations/20260801150000_ops_demo_outages_bound_session_idx.sql`,
+  `supabase/migrations/20260801160000_ops_demo_outages_run_handle.sql`, and
+  `supabase/migrations/20260801161000_drop_ops_demo_sessions.sql`
 - Jira client for `request_marketing_change`: `src/lib/jira.ts`
 - Route/tool-call tests: `tests/mcp-routes.test.ts`
-- Activation and scoped-session tests: `tests/demo-activation-routes.test.ts`,
-  `tests/demo-sessions.test.ts`
+- Activation and state-machine tests: `tests/demo-activation-routes.test.ts`,
+  `tests/demo-outage.test.ts`
 - Jira client tests: `tests/jira.test.ts`
 - Existing backend API routes: `src/routes/*.ts`
 
@@ -458,20 +476,27 @@ Run:
 ```bash
 npm run build
 npm test
+node scripts/verify-mcp-contract.mjs
 ```
+
+`scripts/verify-mcp-contract.mjs` asserts the published contract against the
+real app: prepare/trigger/clear are registered, `start_demo_outage` is gone,
+trigger and clear require `runHandle`, and the `FLYLO_MCP_TOKEN` bearer gate
+returns 401 for missing or wrong tokens.
 
 The MCP tests cover:
 
 - `initialize` without database access.
 - `tools/list` inventory and protected schema fields.
 - transport header validation.
+- the `FLYLO_MCP_TOKEN` bearer gate (401 wrong/missing, open when unset).
 - tool-call forwarding of `x-booking-session`.
 - tool-call forwarding of `Authorization` for the maintenance sweep.
-- `prepare_demo_outage`, its `start_demo_outage` alias,
-  `trigger_demo_outage`, and `clear_demo_outage`.
-- Bind-only activation, trigger-before-bind rejection, active-state pricing,
-  and scoped recovery.
-- `request_marketing_change` graceful degradation when Jira is not
+- `prepare_demo_outage`, `trigger_demo_outage`, and `clear_demo_outage`.
+- Bind-only activation, trigger-before-bind rejection, supersede on
+  re-activation, expiry, and scoped recovery (`tests/demo-outage.test.ts`).
+- `request_marketing_change` boundary validation (discount percent range,
+  ISO dates, date ordering) and graceful degradation when Jira is not
   configured. The Jira client itself (ADF body shape, Basic auth header, and
   the not-configured path) is unit-tested with `fetch` mocked in
   `tests/jira.test.ts`.

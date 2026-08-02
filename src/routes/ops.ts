@@ -3,19 +3,24 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { getSql } from "../db/client.js";
 import {
+  armOpsDemoOutage,
+  clearDemoOutageById,
+  listLiveDemoOutages,
+  type DemoOutageRun,
+} from "../domain/demo-outage.js";
+import { loadEnv } from "../env.js";
+import {
   appendIncidentEvent,
   countRecentErrors,
   createIncident,
-  endDemoSession,
   getIncident,
   getOpenIncident,
-  listActiveDemoSessionsDetailed,
+  invalidateOpsCache,
   listFlags,
   listIncidents,
   listRecentErrors,
   resetOps,
   setFlag,
-  startDemoSession,
   updateIncident,
   type IncidentEvent,
 } from "../domain/ops.js";
@@ -34,17 +39,15 @@ const flagSchema = z.object({
 });
 
 const startDemoSessionSchema = z.object({
-  sessionId: z.string().min(1).max(200),
+  sessionId: z.string().uuid(),
   ttlSeconds: z.number().int().min(1).max(86400).optional(),
-  // Per-session Ops metadata (additive). When absent the session keeps the
-  // previous behaviour: no Slack channel, full arc.
   slackChannel: z.string().max(200).optional(),
   runFullArc: z.boolean().optional(),
-  activationTokenHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 });
 
 const createIncidentSchema = z.object({
   title: z.string().max(200).optional(),
+  kind: z.string().min(1).max(60).optional(),
   event: eventSchema,
 });
 
@@ -97,44 +100,50 @@ export function opsRoutes(): Hono {
     return c.json({ ok: true, flags: await listFlags(getSql()) });
   });
 
-  // --- Scoped (per-session) outage sessions --------------------------------
-  // Manage the SCOPED version of the outage: break the site for one session
-  // only, leaving the ~100 other callers healthy. Independent of the global
-  // /flags routes and the global fare_adjustment_v2 flag, which are unchanged.
+  // --- Scoped demo outage projection ----------------------------------------
+  // The ops console's /demo-sessions contract, projected from
+  // ops_demo_outages. `sessionId` stays as an alias of the outage id so the
+  // frontend can key off either.
+  const projectRun = (run: DemoOutageRun) => ({
+    id: run.id,
+    sessionId: run.id,
+    kind: "outage",
+    status: run.status,
+    slackChannel: run.slackChannel,
+    runFullArc: run.runFullArc,
+    boundBookingSessionId: run.boundBookingSessionId,
+    activatedAt: run.activatedAt,
+    createdAt: run.createdAt,
+    expiresAt: run.expiresAt,
+  });
+
   app.get("/demo-sessions", async (c) => {
-    const sessions = await listActiveDemoSessionsDetailed(getSql());
-    // `id` is included as an alias of `sessionId` (current id convention) so the
-    // frontend can key off either. Both carry the same value.
-    return c.json({
-      sessions: sessions.map((session) => ({ id: session.sessionId, ...session })),
-    });
+    const runs = await listLiveDemoOutages(getSql());
+    return c.json({ sessions: runs.map(projectRun) });
   });
 
   app.post("/demo-sessions", zValidator("json", startDemoSessionSchema), async (c) => {
-    const {
-      sessionId,
-      ttlSeconds,
-      slackChannel,
-      runFullArc,
-      activationTokenHash,
-    } = c.req.valid("json");
-    const session = await startDemoSession(getSql(), sessionId, ttlSeconds, {
+    const { sessionId, ttlSeconds, slackChannel, runFullArc } = c.req.valid("json");
+    const run = await armOpsDemoOutage(getSql(), {
+      id: sessionId,
+      ttlSeconds: ttlSeconds ?? loadEnv().DEMO_SESSION_TTL_SECONDS,
       slackChannel: slackChannel ?? null,
       runFullArc: runFullArc ?? true,
-      activationTokenHash: activationTokenHash ?? null,
     });
-    // `id` alias mirrors GET so the created object and listed objects match.
-    return c.json({ session: { id: session.sessionId, ...session } }, 201);
+    invalidateOpsCache();
+    return c.json({ session: projectRun(run) }, 201);
   });
 
   app.delete("/demo-sessions/:sessionId", async (c) => {
-    await endDemoSession(getSql(), c.req.param("sessionId"));
+    await clearDemoOutageById(getSql(), c.req.param("sessionId"));
+    invalidateOpsCache();
     return c.json({ ok: true });
   });
 
   // POST alias for clients that cannot send DELETE with a path param.
   app.post("/demo-sessions/:sessionId/end", async (c) => {
-    await endDemoSession(getSql(), c.req.param("sessionId"));
+    await clearDemoOutageById(getSql(), c.req.param("sessionId"));
+    invalidateOpsCache();
     return c.json({ ok: true });
   });
 
@@ -169,8 +178,8 @@ export function opsRoutes(): Hono {
   });
 
   app.post("/incidents", zValidator("json", createIncidentSchema), async (c) => {
-    const { title, event } = c.req.valid("json");
-    const incident = await createIncident(getSql(), { title, event: withNow(event) });
+    const { title, kind, event } = c.req.valid("json");
+    const incident = await createIncident(getSql(), { title, kind, event: withNow(event) });
     return c.json({ incident }, 201);
   });
 

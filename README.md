@@ -180,8 +180,7 @@ The MCP tools mirror the `/v1` HTTP API:
 - maintenance: `release_expired_holds`
 - marketing: `request_marketing_change` (files a marketing-request ticket
   into Jira; see below)
-- demos: `prepare_demo_outage`, `trigger_demo_outage`,
-  `clear_demo_outage` (`start_demo_outage` is a prepare alias)
+- demos: `prepare_demo_outage`, `trigger_demo_outage`, `clear_demo_outage`
 
 Tools that operate on owned bookings forward the same
 `x-booking-session: <uuid>` HTTP header sent to `/mcp`; the session UUID is
@@ -193,9 +192,9 @@ configured, call `release_expired_holds` with the matching
 For a presenter-safe outage, call `prepare_demo_outage` and open its
 one-time `activationUrl` in the presenter browser. This binds the pending
 outage to that browser without changing pricing. Call `trigger_demo_outage`
-with the returned `demoSessionId` to activate pricing failures, then call
-`clear_demo_outage` to recover that browser. Other browsers and the global
-outage flag remain unchanged.
+with the returned one-time `runHandle` to activate pricing failures, then call
+`clear_demo_outage` with the same handle to recover that browser. Other
+browsers and the global outage flag remain unchanged.
 
 For the full tool inventory, argument schemas, header requirements,
 JSON-RPC examples, and implementation map, see [`docs/mcp.md`](./docs/mcp.md).
@@ -244,31 +243,28 @@ instantly. State lives in the `ops_flags`, `ops_errors`, and
 `flylo-air/docs` → `demo-3am-outage.md`.
 
 Presenters (or their agents) can arm a **scoped, per-person** version of the
-outage without opening `/ops` or handling `OPS_SHARED_SECRET`, via two MCP tools
-on the booking MCP server: `start_demo_outage` and `clear_demo_outage`. A scoped
-outage breaks the booking site for one browser session only. `start` returns a
-one-time activation URL that binds the existing `public.ops_demo_sessions` row
-to the browser's normal `x-booking-session` identity. Search, selection, and
-checkout then stay broken through ordinary navigation without a sticky query
-parameter. The original `x-demo-session` path remains available to the Ops
-Console and crew NOC. The tools inject the ops secret server-side and never flip
-the global `fare_adjustment_v2` flag. `clear` removes only the named
-`demoSessionId`; the TTL is 20 minutes by default. Presenters running in
-parallel should pass their own Slack channel as
-`slackChannel` after inviting the FlyLo Ops app. Each run then gets an isolated
-browser outage and an isolated Slack incident thread. See `docs/mcp.md` for
-details.
+outage without opening `/ops` or handling `OPS_SHARED_SECRET`, via three MCP
+tools on the booking MCP server: `prepare_demo_outage`, `trigger_demo_outage`,
+and `clear_demo_outage`. A scoped outage breaks the booking site for one
+browser session only. State lives in `public.ops_demo_outages` as a small
+state machine (`pending` -> bound -> `active` -> `cleared`/`expired`).
+`prepare` returns a one-time activation URL that binds the run to the
+browser's normal `x-booking-session` identity, plus an opaque `runHandle`
+(shown once) that `trigger` and `clear` require; the row UUID
+(`demoSessionId`) is attribution-only. Search, selection, and checkout stay
+broken through ordinary navigation without a sticky query parameter. The
+original `x-demo-session` path remains available to the Ops Console and crew
+NOC, backed by the same table. The tools never flip the global
+`fare_adjustment_v2` flag. The TTL is 20 minutes by default. Presenters
+running in parallel should pass their own Slack channel as `slackChannel`
+after inviting the FlyLo Ops app. Each run then gets an isolated browser
+outage and an isolated Slack incident thread. The `/mcp` endpoint itself can
+be gated with `FLYLO_MCP_TOKEN`. See `docs/mcp.md` for details.
 
-A second, benign scenario rides alongside the outage: a simulated traffic
-spike behind the `traffic_spike_sim` ops flag. It is purely informational and
-is never read on any request or pricing path, so enabling it keeps the booking
-site fully healthy (no 5xx, all probes green). Incidents carry a `kind` column
-(`outage` or `spike`, default `outage`) so consumers can tell a benign spike
-from a real outage. The follow-up frontend orchestrator, on seeing the flag
-enabled with no open incident, opens a `spike` incident, posts a benign alert,
-and after a short TTL flips the flag off, resolves the incident, and posts a
-benign recovery note, with no summarizer/fixer agents and no PR. `resetOps`
-turns both scenario flags off and closes open incidents of any kind.
+Incidents carry a `kind` column (`outage` or `spike`, default `outage`) so
+consumers can tell a benign scenario from a real outage; the create-incident
+ops route accepts and persists `kind`. `resetOps` turns the outage flag off,
+clears every live demo outage run, and closes open incidents of any kind.
 
 ## Deployment
 

@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   DemoOutageTriggerError,
+  type ClearedDemoOutage,
   type DemoOutage,
   type TriggeredDemoOutage,
 } from "../domain/demo-outage.js";
@@ -29,8 +30,8 @@ type BookingMcpServerOptions = {
       ttlMinutes?: number;
       slackChannel?: string | null;
     }) => Promise<DemoOutage>;
-    trigger: (demoSessionId: string) => Promise<TriggeredDemoOutage>;
-    clear: (demoSessionId: string) => Promise<boolean>;
+    trigger: (runHandle: string) => Promise<TriggeredDemoOutage>;
+    clear: (runHandle: string) => Promise<ClearedDemoOutage | null>;
   };
 };
 
@@ -534,63 +535,33 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         title: z.string().min(1).max(240),
         description: z.string().min(1).max(4000),
         promoCode: z.string().max(40).optional(),
-        discountPercent: z.number().optional(),
-        startsAt: z.string().optional(),
-        endsAt: z.string().optional(),
+        discountPercent: z.number().gt(0).max(100).optional(),
+        startsAt: isoDateSchema.optional(),
+        endsAt: isoDateSchema.optional(),
       }),
     },
     async (input) => {
+      if (input.startsAt && input.endsAt && input.endsAt < input.startsAt) {
+        return jsonToolResult(
+          {
+            ok: false,
+            code: "invalid_dates",
+            message: "endsAt must be on or after startsAt.",
+          },
+          true,
+        );
+      }
       const result = await createMarketingIssue(input, env);
       const isError = !result.configured || Boolean(result.error);
       return jsonToolResult(result, isError);
     },
   );
 
-  const prepareDemoOutageInputSchema = z.object({
-    ttlMinutes: z.number().int().min(1).max(60).optional(),
-    slackChannel: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .describe(
-        "Slack channel name or channel ID where FlyLo Ops should post this run.",
-      )
-      .optional(),
-  });
-
-  async function prepareDemoOutageTool(args: {
-    ttlMinutes?: number;
-    slackChannel?: string;
-  }) {
-    const outage = await demoOutages.prepare({
-      ...(args.ttlMinutes === undefined ? {} : { ttlMinutes: args.ttlMinutes }),
-      ...(args.slackChannel === undefined
-        ? {}
-        : { slackChannel: args.slackChannel }),
-    });
-    const activationUrl = demoActivationUrl(
-      env.DEMO_BOOKING_WEB_URL,
-      outage.activationToken,
-    );
-
-    return jsonToolResult({
-      ok: true,
-      demoSessionId: outage.demoSessionId,
-      scope: "browser-session",
-      activationUrl,
-      ttlMinutes: outage.ttlMinutes,
-      expiresAt: outage.expiresAt,
-      ...(args.slackChannel === undefined
-        ? {}
-        : { slackChannel: args.slackChannel }),
-      instructions:
-        "Open activationUrl in the presenter's browser to bind this outage. " +
-        "The browser stays healthy until you call trigger_demo_outage with " +
-        "demoSessionId. Other browsers remain healthy. Call clear_demo_outage " +
-        "to recover.",
-    });
-  }
+  const runHandleSchema = z
+    .string()
+    .min(20)
+    .max(200)
+    .describe("Opaque run handle returned once by prepare_demo_outage.");
 
   server.registerTool(
     "prepare_demo_outage",
@@ -598,24 +569,52 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       title: "Prepare scoped demo outage",
       description:
         "Create a per-browser FlyLo booking outage and return an activation " +
-        "URL. Opening the URL binds the browser only. Pricing stays healthy " +
-        "until trigger_demo_outage.",
-      inputSchema: prepareDemoOutageInputSchema,
+        "URL plus a one-time runHandle. Opening the URL binds the browser " +
+        "only. Pricing stays healthy until trigger_demo_outage.",
+      inputSchema: z.object({
+        ttlMinutes: z.number().int().min(1).max(60).optional(),
+        slackChannel: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .describe(
+            "Slack channel name or channel ID where FlyLo Ops should post this run.",
+          )
+          .optional(),
+      }),
     },
-    prepareDemoOutageTool,
-  );
+    async (args) => {
+      const outage = await demoOutages.prepare({
+        ...(args.ttlMinutes === undefined ? {} : { ttlMinutes: args.ttlMinutes }),
+        ...(args.slackChannel === undefined
+          ? {}
+          : { slackChannel: args.slackChannel }),
+      });
+      const activationUrl = demoActivationUrl(
+        env.DEMO_BOOKING_WEB_URL,
+        outage.activationToken,
+      );
 
-  server.registerTool(
-    "start_demo_outage",
-    {
-      title: "Start scoped demo outage",
-      description:
-        "Alias for prepare_demo_outage. Creates an activation URL that binds " +
-        "the presenter browser only. Pricing failures start after " +
-        "trigger_demo_outage.",
-      inputSchema: prepareDemoOutageInputSchema,
+      return jsonToolResult({
+        ok: true,
+        demoSessionId: outage.demoSessionId,
+        runHandle: outage.runHandle,
+        scope: "browser-session",
+        activationUrl,
+        ttlMinutes: outage.ttlMinutes,
+        expiresAt: outage.expiresAt,
+        ...(args.slackChannel === undefined
+          ? {}
+          : { slackChannel: args.slackChannel }),
+        instructions:
+          "Open activationUrl in the presenter's browser to BIND this outage. " +
+          "The browser stays healthy until you call trigger_demo_outage with " +
+          "runHandle. runHandle is shown only once; keep it. demoSessionId is " +
+          "for attribution only. Call clear_demo_outage with runHandle to " +
+          "recover.",
+      });
     },
-    prepareDemoOutageTool,
   );
 
   server.registerTool(
@@ -626,12 +625,12 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         "Arm a previously bound scoped demo outage so pricing fails for that " +
         "browser only. Fails if the activation URL has not been opened.",
       inputSchema: z.object({
-        demoSessionId: uuidSchema,
+        runHandle: runHandleSchema,
       }),
     },
-    async ({ demoSessionId }) => {
+    async ({ runHandle }) => {
       try {
-        const outage = await demoOutages.trigger(demoSessionId);
+        const outage = await demoOutages.trigger(runHandle);
         return jsonToolResult({
           ok: true,
           demoSessionId: outage.demoSessionId,
@@ -646,7 +645,6 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
           return jsonToolResult(
             {
               ok: false,
-              demoSessionId,
               code: error.code,
               message: error.message,
             },
@@ -666,26 +664,25 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
         "Clear one browser-scoped FlyLo outage. Other presenters and the " +
         "global outage flag are untouched.",
       inputSchema: z.object({
-        demoSessionId: uuidSchema,
+        runHandle: runHandleSchema,
       }),
     },
-    async ({ demoSessionId }) => {
-      const cleared = await demoOutages.clear(demoSessionId);
+    async ({ runHandle }) => {
+      const cleared = await demoOutages.clear(runHandle);
       return jsonToolResult(
         cleared
           ? {
               ok: true,
-              demoSessionId,
+              demoSessionId: cleared.demoSessionId,
               cleared: true,
               message:
                 "The scoped demo outage is cleared. The browser is healthy again.",
             }
           : {
               ok: false,
-              demoSessionId,
               cleared: false,
               message:
-                "No pending or active scoped demo outage matched that id.",
+                "No pending or active scoped demo outage matched that run handle.",
             },
         !cleared,
       );
