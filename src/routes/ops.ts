@@ -164,7 +164,10 @@ export function opsRoutes(): Hono {
       Math.max(Number.parseInt(c.req.query("limit") ?? "50", 10) || 50, 1),
       200,
     );
-    return c.json({ errors: await listRecentErrors(getSql(), limit) });
+    const demoSessionId = c.req.query("demoSessionId")?.trim() || undefined;
+    return c.json({
+      errors: await listRecentErrors(getSql(), limit, demoSessionId),
+    });
   });
 
   app.get("/errors/count", async (c) => {
@@ -172,7 +175,11 @@ export function opsRoutes(): Hono {
       Math.max(Number.parseInt(c.req.query("since") ?? "120", 10) || 120, 1),
       3600,
     );
-    return c.json({ count: await countRecentErrors(getSql(), since), sinceSeconds: since });
+    const demoSessionId = c.req.query("demoSessionId")?.trim() || undefined;
+    return c.json({
+      count: await countRecentErrors(getSql(), since, demoSessionId),
+      sinceSeconds: since,
+    });
   });
 
   // --- Incidents -----------------------------------------------------------

@@ -286,13 +286,24 @@ export async function logOpsError(
 export async function listRecentErrors(
   sql: postgres.Sql,
   limit = 50,
+  demoSessionId?: string,
 ): Promise<OpsError[]> {
-  const rows = (await sql`
-    select id, occurred_at, method, path, status, message, stack, demo_session_id
-    from public.ops_errors
-    order by occurred_at desc
-    limit ${limit}
-  `) as unknown as Array<{
+  const rows = (
+    demoSessionId
+      ? await sql`
+          select id, occurred_at, method, path, status, message, stack, demo_session_id
+          from public.ops_errors
+          where demo_session_id = ${demoSessionId}
+          order by occurred_at desc
+          limit ${limit}
+        `
+      : await sql`
+          select id, occurred_at, method, path, status, message, stack, demo_session_id
+          from public.ops_errors
+          order by occurred_at desc
+          limit ${limit}
+        `
+  ) as unknown as Array<{
     id: number;
     occurred_at: Date;
     method: string;
@@ -317,13 +328,24 @@ export async function listRecentErrors(
 export async function countRecentErrors(
   sql: postgres.Sql,
   sinceSeconds: number,
+  demoSessionId?: string,
 ): Promise<number> {
-  const rows = (await sql`
-    select count(*)::int as n
-    from public.ops_errors
-    where status >= 500
-      and occurred_at > now() - (${sinceSeconds} || ' seconds')::interval
-  `) as unknown as Array<{ n: number }>;
+  const rows = (
+    demoSessionId
+      ? await sql`
+          select count(*)::int as n
+          from public.ops_errors
+          where status >= 500
+            and demo_session_id = ${demoSessionId}
+            and occurred_at > now() - (${sinceSeconds} || ' seconds')::interval
+        `
+      : await sql`
+          select count(*)::int as n
+          from public.ops_errors
+          where status >= 500
+            and occurred_at > now() - (${sinceSeconds} || ' seconds')::interval
+        `
+  ) as unknown as Array<{ n: number }>;
   return rows[0]?.n ?? 0;
 }
 

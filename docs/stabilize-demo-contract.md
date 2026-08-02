@@ -26,12 +26,11 @@ plaintext exactly once by `prepare_demo_outage`:
 
 ## Legacy table
 
-`public.ops_demo_sessions` is gone. Runtime paths (pricing guard, ops cache,
-`/v1/demo/activate`, MCP tools) read only `ops_demo_outages`. The
-booking-frontend still calls `/v1/_ops/demo-sessions` (list from the
-orchestrator tick and status route, create from the ops panel trigger route,
-delete from resolve), so those routes stay but are a thin projection over
-`ops_demo_outages`:
+Runtime paths (pricing guard, ops cache, `/v1/demo/activate`, MCP tools) read
+only `ops_demo_outages`. The booking-frontend still calls
+`/v1/_ops/demo-sessions` (list from the orchestrator tick and status route,
+create from the ops panel trigger route, delete from resolve), so those routes
+stay as a thin projection over `ops_demo_outages`:
 
 - `GET` lists live (pending or active, unexpired) runs; `sessionId` aliases
   the outage id.
@@ -44,8 +43,10 @@ delete from resolve), so those routes stay but are a thin projection over
 
 Migrations: `20260801160000_ops_demo_outages_run_handle.sql` adds
 `run_handle_hash` and `run_full_arc` and makes `activation_token_hash`
-nullable; `20260801161000_drop_ops_demo_sessions.sql` drops the legacy table.
-No backfill: legacy rows carried nothing the new path needs.
+nullable; `20260801161000_retire_ops_demo_sessions.sql` renames the legacy
+table to `ops_demo_sessions_retired` for an observation window. Drop it in a
+later migration after a clean canary. No backfill: legacy rows carried
+nothing the new path needs.
 
 ## Supersede over reject
 
@@ -67,15 +68,17 @@ Re-preparing therefore never wedges a presenter.
 - `scripts/verify-mcp-contract.mjs` re-checks the tool inventory, runHandle
   requirement, and the 401 gate against the real app.
 
-## Known gaps for later units
+## Auth rollout
 
-- With `FLYLO_MCP_TOKEN` set, `release_expired_holds` forwards the same
-  `Authorization` header to the cron route, so it cannot carry a distinct
-  `CRON_SECRET` through MCP.
+`FLYLO_MCP_TOKEN` stays optional in code so local/dev keep working. Production
+definition of done requires the token set on the booking API and matching
+plugin `FLYLO_TOKEN` values. Anonymous 401 is a deploy gate, not a code merge
+gate.
+
+## Remaining gaps
+
 - The frontend still creates ops-panel runs via `POST /demo-sessions`; moving
   that flow onto prepare/trigger/clear (and dropping the `x-demo-session`
   header path) is frontend work.
-- `GET /v1/_ops/errors` still ignores the `demoSessionId` query param the
-  frontend sends for scoped error filtering.
 - The in-process ops cache is per-instance; cross-instance freshness still
   relies on the 7s TTL plus the direct bound-session lookup on cache miss.

@@ -512,9 +512,13 @@ export function createBookingMcpServer(options: BookingMcpServerOptions): McpSer
       description: "Run the same expired-hold sweep used by the scheduled cron endpoint.",
       inputSchema: z.object({}),
     },
-    async (_args, extra) => {
-      const authorization = getRequestHeader(extra, "authorization");
-      const headers = authorization ? { Authorization: authorization } : undefined;
+    async () => {
+      // Cron auth is server-side only. Do not forward the MCP bearer
+      // (FLYLO_MCP_TOKEN); that is a different credential from CRON_SECRET.
+      const cronSecret = process.env.CRON_SECRET;
+      const headers = cronSecret
+        ? { Authorization: `Bearer ${cronSecret}` }
+        : undefined;
       return callInternalApi(
         internalFetch,
         "/v1/_cron/release-expired-holds",

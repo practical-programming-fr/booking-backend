@@ -458,7 +458,7 @@ curl -sS http://localhost:8787/mcp \
   `supabase/migrations/20260801140000_ops_demo_outages.sql`,
   `supabase/migrations/20260801150000_ops_demo_outages_bound_session_idx.sql`,
   `supabase/migrations/20260801160000_ops_demo_outages_run_handle.sql`, and
-  `supabase/migrations/20260801161000_drop_ops_demo_sessions.sql`
+  `supabase/migrations/20260801161000_retire_ops_demo_sessions.sql`
 - Jira client for `request_marketing_change`: `src/lib/jira.ts`
 - Route/tool-call tests: `tests/mcp-routes.test.ts`
 - Activation and state-machine tests: `tests/demo-activation-routes.test.ts`,

@@ -264,22 +264,29 @@ describe("mcp route", () => {
     expect(body).toMatchObject({ result: { structuredContent: { ok: true } } });
   });
 
-  it("forwards Authorization for the hold-sweep tool without a tool secret argument", async () => {
-    const { calls, body } = await callToolWithFakeFetch(
-      "release_expired_holds",
-      {},
-      { Authorization: "Bearer test-secret" },
-    );
+  it("uses CRON_SECRET for the hold-sweep tool, not the MCP bearer", async () => {
+    const previous = process.env.CRON_SECRET;
+    process.env.CRON_SECRET = "cron-only-secret";
+    try {
+      const { calls, body } = await callToolWithFakeFetch(
+        "release_expired_holds",
+        {},
+        { Authorization: "Bearer mcp-token-must-not-forward" },
+      );
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.path).toBe("/v1/_cron/release-expired-holds");
-    expect(calls[0]?.init?.method).toBe("POST");
-    expect(calls[0]?.init?.headers).toMatchObject({
-      "Content-Type": "application/json",
-      Authorization: "Bearer test-secret",
-    });
-    expect(calls[0]?.init?.body).toBeUndefined();
-    expect(body).toMatchObject({ result: { structuredContent: { ok: true } } });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.path).toBe("/v1/_cron/release-expired-holds");
+      expect(calls[0]?.init?.method).toBe("POST");
+      expect(calls[0]?.init?.headers).toMatchObject({
+        "Content-Type": "application/json",
+        Authorization: "Bearer cron-only-secret",
+      });
+      expect(calls[0]?.init?.body).toBeUndefined();
+      expect(body).toMatchObject({ result: { structuredContent: { ok: true } } });
+    } finally {
+      if (previous === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = previous;
+    }
   });
 
   it("request_marketing_change rejects an out-of-range discount percent", async () => {
