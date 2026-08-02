@@ -9,6 +9,7 @@
 
 import type postgres from "postgres";
 import {
+  activeDemoOutageIdForSession,
   clearAllDemoOutages,
   isDemoOutageActiveForSession,
   listActiveDemoOutageBindings,
@@ -172,18 +173,36 @@ export async function isOutageActiveForRequest(
     : false;
 }
 
-export function cachedDemoSessionIdForRequest(identity: {
-  demoSessionId?: string;
-  bookingSessionId?: string;
-}): string | null {
-  if (!opsCache || opsCache.globalOutage) {
+// Resolve the scoped demo session id a 5xx should be attributed to, mirroring
+// isOutageActiveForRequest so error attribution matches the outage decision.
+// Answers from the cache when possible, but falls back to a direct
+// ops_demo_outages lookup for a bound booking session so a freshly triggered
+// scoped outage is still stamped when the cache is stale. Returns null under a
+// global outage (everyone 500s regardless of session) to keep global-outage
+// failures distinguishable from scoped ones.
+export async function resolveDemoSessionIdForRequest(
+  sql: postgres.Sql,
+  identity: {
+    demoSessionId?: string;
+    bookingSessionId?: string;
+  },
+): Promise<string | null> {
+  if (cachedGlobalOutageActive()) {
     return null;
   }
-  if (identity.demoSessionId && opsCache.activeOutageIds.has(identity.demoSessionId)) {
-    return identity.demoSessionId;
+  if (opsCache) {
+    if (identity.demoSessionId && opsCache.activeOutageIds.has(identity.demoSessionId)) {
+      return identity.demoSessionId;
+    }
+    if (identity.bookingSessionId) {
+      const bound = opsCache.boundBookingSessions.get(identity.bookingSessionId);
+      if (bound) {
+        return bound;
+      }
+    }
   }
   return identity.bookingSessionId
-    ? opsCache.boundBookingSessions.get(identity.bookingSessionId) ?? null
+    ? activeDemoOutageIdForSession(sql, identity.bookingSessionId)
     : null;
 }
 

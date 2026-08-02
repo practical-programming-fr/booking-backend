@@ -78,6 +78,18 @@ export class DemoOutageActivationError extends Error {
   }
 }
 
+// Raised when an ops-console arm targets an id that already belongs to an
+// MCP-managed run (one that still holds a run handle or activation token). The
+// upsert deliberately refuses to clobber those control secrets, so the route
+// surfaces a controlled 409 conflict instead of an uncaught 500.
+export class OpsDemoOutageConflictError extends Error {
+  readonly status = 409 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "OpsDemoOutageConflictError";
+  }
+}
+
 export class DemoOutageTriggerError extends Error {
   constructor(
     public readonly code:
@@ -420,7 +432,12 @@ export async function armOpsDemoOutage(
 
   const row = rows[0];
   if (!row) {
-    throw new Error("Failed to arm ops demo outage");
+    // The conflict was blocked by the run_handle_hash/activation_token_hash
+    // guard, i.e. this id belongs to an MCP-managed run. Signal a controlled
+    // conflict rather than throwing a bare Error that surfaces as a 500.
+    throw new OpsDemoOutageConflictError(
+      "This demo session id belongs to an MCP-managed run and cannot be armed from the ops console.",
+    );
   }
   return mapRun(row);
 }
@@ -507,6 +524,29 @@ export async function isDemoOutageActiveForSession(
   } catch {
     // A missing migration or transient lookup must never affect real bookings.
     return false;
+  }
+}
+
+// The active (triggered, unexpired) outage id bound to a booking session, or
+// null. Mirrors isDemoOutageActiveForSession but returns the outage id so a
+// scoped 500 can still be attributed when the hot-path cache is stale. Fails
+// safe to null so error attribution never affects real bookings.
+export async function activeDemoOutageIdForSession(
+  sql: postgres.Sql,
+  bookingSessionId: string,
+): Promise<string | null> {
+  try {
+    const rows = (await sql`
+      select id
+      from public.ops_demo_outages
+      where booking_session_id = ${bookingSessionId}
+        and status = 'active'
+        and expires_at > now()
+      limit 1
+    `) as unknown as Array<{ id: string }>;
+    return rows[0]?.id ?? null;
+  } catch {
+    return null;
   }
 }
 

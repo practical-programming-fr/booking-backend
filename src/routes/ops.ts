@@ -6,6 +6,7 @@ import {
   armOpsDemoOutage,
   clearDemoOutageById,
   listLiveDemoOutages,
+  OpsDemoOutageConflictError,
   type DemoOutageRun,
 } from "../domain/demo-outage.js";
 import { loadEnv } from "../env.js";
@@ -124,14 +125,24 @@ export function opsRoutes(): Hono {
 
   app.post("/demo-sessions", zValidator("json", startDemoSessionSchema), async (c) => {
     const { sessionId, ttlSeconds, slackChannel, runFullArc } = c.req.valid("json");
-    const run = await armOpsDemoOutage(getSql(), {
-      id: sessionId,
-      ttlSeconds: ttlSeconds ?? loadEnv().DEMO_SESSION_TTL_SECONDS,
-      slackChannel: slackChannel ?? null,
-      runFullArc: runFullArc ?? true,
-    });
-    invalidateOpsCache();
-    return c.json({ session: projectRun(run) }, 201);
+    try {
+      const run = await armOpsDemoOutage(getSql(), {
+        id: sessionId,
+        ttlSeconds: ttlSeconds ?? loadEnv().DEMO_SESSION_TTL_SECONDS,
+        slackChannel: slackChannel ?? null,
+        runFullArc: runFullArc ?? true,
+      });
+      invalidateOpsCache();
+      return c.json({ session: projectRun(run) }, 201);
+    } catch (error) {
+      if (error instanceof OpsDemoOutageConflictError) {
+        return c.json(
+          { error: { message: error.message, status: error.status } },
+          error.status,
+        );
+      }
+      throw error;
+    }
   });
 
   app.delete("/demo-sessions/:sessionId", async (c) => {
