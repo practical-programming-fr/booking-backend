@@ -4,7 +4,7 @@ import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
 import { loadEnv } from "./env.js";
 import { getSql } from "./db/client.js";
-import { cachedDemoSessionIdForRequest, logOpsError } from "./domain/ops.js";
+import { logOpsError, resolveDemoSessionIdForRequest } from "./domain/ops.js";
 import {
   bookingSessionIdFrom,
   demoSessionIdFrom,
@@ -61,7 +61,7 @@ export function buildApp(): Hono {
       // the stamp null to keep global-outage failures distinguishable from
       // scoped ones (the global incident orchestrator keys off the global flag
       // plus the null-stamped 5xx count).
-      const stamp = cachedDemoSessionIdForRequest({
+      const stamp = await resolveDemoSessionIdForRequest(getSql(), {
         demoSessionId: demoSessionIdFrom(c),
         bookingSessionId: bookingSessionIdFrom(c),
       });

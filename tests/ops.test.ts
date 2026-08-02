@@ -7,7 +7,6 @@
 import { describe, expect, it } from "vitest";
 import {
   FARE_ADJUSTMENT_FLAG,
-  TRAFFIC_SPIKE_FLAG,
   createIncident,
   getFlag,
   getIncident,
@@ -155,22 +154,19 @@ describe("createIncident kind", () => {
 });
 
 describe("resetOps", () => {
-  it("turns both scenario flags off and closes open incidents of any kind", async () => {
+  it("turns the outage flag off and closes open incidents of any kind", async () => {
     const { sql } = createFakeSql();
     await setFlag(sql, FARE_ADJUSTMENT_FLAG, true, "tester");
-    await setFlag(sql, TRAFFIC_SPIKE_FLAG, true, "tester");
     const spike = await createIncident(sql, {
       kind: "spike",
       event: detected("traffic spike detected"),
     });
 
     expect(await getFlag(sql, FARE_ADJUSTMENT_FLAG)).toBe(true);
-    expect(await getFlag(sql, TRAFFIC_SPIKE_FLAG)).toBe(true);
 
     await resetOps(sql);
 
     expect(await getFlag(sql, FARE_ADJUSTMENT_FLAG)).toBe(false);
-    expect(await getFlag(sql, TRAFFIC_SPIKE_FLAG)).toBe(false);
 
     const after = await getIncident(sql, spike.id);
     expect(after?.status).toBe("resolved");

@@ -1,11 +1,30 @@
+// Demo outage runs.
+//
+// One row in public.ops_demo_outages is a state machine:
+//
+//   pending (unbound) --activate--> pending (bound) --trigger--> active
+//   any live state --clear--> cleared
+//   any live state past expires_at --> expired
+//
+// Two secrets control a run, both stored as SHA-256 hashes:
+// - activation token: single-use, opened once in the presenter browser to
+//   bind the run to that browser's booking session.
+// - run handle: returned to the operator once at prepare time; trigger and
+//   clear look the run up by its hash, so the bare row UUID never grants
+//   control. The UUID (demoSessionId) is exposed only for attribution
+//   (ops_errors stamping, ops console listing).
+
 import { createHash, randomBytes } from "node:crypto";
 import type postgres from "postgres";
 
 export const DEFAULT_DEMO_OUTAGE_TTL_MINUTES = 20;
 
+export type DemoOutageStatus = "pending" | "active" | "cleared" | "expired";
+
 export type DemoOutage = {
   demoSessionId: string;
   activationToken: string;
+  runHandle: string;
   expiresAt: string;
   ttlMinutes: number;
 };
@@ -22,6 +41,29 @@ export type TriggeredDemoOutage = {
   expiresAt: string;
 };
 
+export type ClearedDemoOutage = {
+  demoSessionId: string;
+};
+
+// Projection of a live (pending or active, unexpired) run for the ops
+// console. Shaped to match what the booking-frontend /demo-sessions client
+// already reads; the run handle hash is never included.
+export type DemoOutageRun = {
+  id: string;
+  status: DemoOutageStatus;
+  slackChannel: string | null;
+  runFullArc: boolean;
+  boundBookingSessionId: string | null;
+  activatedAt: string | null;
+  createdAt: string;
+  expiresAt: string;
+};
+
+export type DemoOutageBinding = {
+  outageId: string;
+  bookingSessionId: string | null;
+};
+
 export class DemoOutageActivationError extends Error {
   constructor(
     public readonly status: 404 | 409 | 410,
@@ -33,6 +75,18 @@ export class DemoOutageActivationError extends Error {
   ) {
     super(message);
     this.name = "DemoOutageActivationError";
+  }
+}
+
+// Raised when an ops-console arm targets an id that already belongs to an
+// MCP-managed run (one that still holds a run handle or activation token). The
+// upsert deliberately refuses to clobber those control secrets, so the route
+// surfaces a controlled 409 conflict instead of an uncaught 500.
+export class OpsDemoOutageConflictError extends Error {
+  readonly status = 409 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "OpsDemoOutageConflictError";
   }
 }
 
@@ -50,8 +104,8 @@ export class DemoOutageTriggerError extends Error {
   }
 }
 
-function hashActivationToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export async function createDemoOutage(
@@ -60,18 +114,20 @@ export async function createDemoOutage(
 ): Promise<DemoOutage> {
   const ttlMinutes = input.ttlMinutes ?? DEFAULT_DEMO_OUTAGE_TTL_MINUTES;
   const activationToken = randomBytes(32).toString("base64url");
-  const tokenHash = hashActivationToken(activationToken);
+  const runHandle = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
 
   const rows = (await sql`
     insert into public.ops_demo_outages (
       activation_token_hash,
+      run_handle_hash,
       slack_channel,
       status,
       expires_at
     )
     values (
-      ${tokenHash},
+      ${sha256Hex(activationToken)},
+      ${sha256Hex(runHandle)},
       ${input.slackChannel ?? null},
       'pending',
       ${expiresAt.toISOString()}
@@ -87,6 +143,7 @@ export async function createDemoOutage(
   return {
     demoSessionId: row.id,
     activationToken,
+    runHandle,
     expiresAt: row.expires_at.toISOString(),
     ttlMinutes,
   };
@@ -96,7 +153,7 @@ export async function activateDemoOutage(
   sql: postgres.Sql,
   input: { activationToken: string; bookingSessionId: string },
 ): Promise<ActivatedDemoOutage> {
-  const tokenHash = hashActivationToken(input.activationToken);
+  const tokenHash = sha256Hex(input.activationToken);
 
   return sql.begin(async (tx) => {
     // Serialize concurrent binds for the same browser session so two different
@@ -113,7 +170,7 @@ export async function activateDemoOutage(
     `) as unknown as Array<{
       id: string;
       booking_session_id: string | null;
-      status: "pending" | "active" | "cleared" | "expired";
+      status: DemoOutageStatus;
       expires_at: Date;
     }>;
 
@@ -179,8 +236,8 @@ export async function activateDemoOutage(
       );
     }
 
-    // One browser may hold only one pending/active bind. Re-pairing clears
-    // that browser's previous outage without touching any other browser.
+    // One browser may hold only one pending/active bind. Activating a new run
+    // supersedes that browser's previous run without touching other browsers.
     await tx`
       update public.ops_demo_outages
       set status = 'cleared', cleared_at = now()
@@ -212,19 +269,21 @@ export async function activateDemoOutage(
 
 export async function triggerDemoOutage(
   sql: postgres.Sql,
-  demoSessionId: string,
+  runHandle: string,
 ): Promise<TriggeredDemoOutage> {
+  const handleHash = sha256Hex(runHandle);
+
   return sql.begin(async (tx) => {
     const rows = (await tx`
       select id, booking_session_id, status, expires_at
       from public.ops_demo_outages
-      where id = ${demoSessionId}
+      where run_handle_hash = ${handleHash}
       limit 1
       for update
     `) as unknown as Array<{
       id: string;
       booking_session_id: string | null;
-      status: "pending" | "active" | "cleared" | "expired";
+      status: DemoOutageStatus;
       expires_at: Date;
     }>;
 
@@ -232,7 +291,7 @@ export async function triggerDemoOutage(
     if (!outage) {
       throw new DemoOutageTriggerError(
         "outage_not_found",
-        "No scoped demo outage matched that id.",
+        "No scoped demo outage matched that run handle.",
       );
     }
 
@@ -299,16 +358,153 @@ export async function triggerDemoOutage(
 
 export async function clearDemoOutage(
   sql: postgres.Sql,
-  demoSessionId: string,
+  runHandle: string,
+): Promise<ClearedDemoOutage | null> {
+  const rows = (await sql`
+    update public.ops_demo_outages
+    set status = 'cleared', cleared_at = now()
+    where run_handle_hash = ${sha256Hex(runHandle)}
+      and status in ('pending', 'active')
+    returning id
+  `) as unknown as Array<{ id: string }>;
+  const row = rows[0];
+  return row ? { demoSessionId: row.id } : null;
+}
+
+// Clear by row id. Only for the OPS_SHARED_SECRET-gated console routes; the
+// MCP surface requires the run handle instead.
+export async function clearDemoOutageById(
+  sql: postgres.Sql,
+  outageId: string,
 ): Promise<boolean> {
   const rows = (await sql`
     update public.ops_demo_outages
     set status = 'cleared', cleared_at = now()
-    where id = ${demoSessionId}
+    where id = ${outageId}
       and status in ('pending', 'active')
     returning id
   `) as unknown as Array<{ id: string }>;
   return rows.length > 0;
+}
+
+// Arm an immediately-active run keyed by a caller-chosen id, with no
+// activation or run handle. This backs the ops console's legacy
+// POST /demo-sessions flow, where the browser carries the id in the
+// x-demo-session header instead of binding a booking session.
+export async function armOpsDemoOutage(
+  sql: postgres.Sql,
+  input: {
+    id: string;
+    ttlSeconds: number;
+    slackChannel?: string | null;
+    runFullArc?: boolean;
+  },
+): Promise<DemoOutageRun> {
+  const rows = (await sql`
+    insert into public.ops_demo_outages (
+      id,
+      slack_channel,
+      run_full_arc,
+      status,
+      activated_at,
+      expires_at
+    )
+    values (
+      ${input.id},
+      ${input.slackChannel ?? null},
+      ${input.runFullArc ?? true},
+      'active',
+      now(),
+      now() + (${input.ttlSeconds} || ' seconds')::interval
+    )
+    on conflict (id) do update
+      set slack_channel = excluded.slack_channel,
+          run_full_arc = excluded.run_full_arc,
+          status = 'active',
+          cleared_at = null,
+          booking_session_id = null,
+          expires_at = excluded.expires_at
+      where public.ops_demo_outages.run_handle_hash is null
+        and public.ops_demo_outages.activation_token_hash is null
+    returning id, status, slack_channel, run_full_arc, booking_session_id,
+      activated_at, created_at, expires_at
+  `) as unknown as Array<RunRow>;
+
+  const row = rows[0];
+  if (!row) {
+    // The conflict was blocked by the run_handle_hash/activation_token_hash
+    // guard, i.e. this id belongs to an MCP-managed run. Signal a controlled
+    // conflict rather than throwing a bare Error that surfaces as a 500.
+    throw new OpsDemoOutageConflictError(
+      "This demo session id belongs to an MCP-managed run and cannot be armed from the ops console.",
+    );
+  }
+  return mapRun(row);
+}
+
+type RunRow = {
+  id: string;
+  status: DemoOutageStatus;
+  slack_channel: string | null;
+  run_full_arc: boolean;
+  booking_session_id: string | null;
+  activated_at: Date | null;
+  created_at: Date;
+  expires_at: Date;
+};
+
+function mapRun(row: RunRow): DemoOutageRun {
+  return {
+    id: row.id,
+    status: row.status,
+    slackChannel: row.slack_channel ?? null,
+    runFullArc: row.run_full_arc ?? true,
+    boundBookingSessionId: row.booking_session_id ?? null,
+    activatedAt: row.activated_at?.toISOString() ?? null,
+    createdAt: row.created_at.toISOString(),
+    expiresAt: row.expires_at.toISOString(),
+  };
+}
+
+// Live (pending or active, unexpired) runs for the ops console listing. Not
+// on the pricing hot path. Fails safe to empty when the read fails.
+export async function listLiveDemoOutages(
+  sql: postgres.Sql,
+): Promise<DemoOutageRun[]> {
+  try {
+    const rows = (await sql`
+      select id, status, slack_channel, run_full_arc, booking_session_id,
+        activated_at, created_at, expires_at
+      from public.ops_demo_outages
+      where status in ('pending', 'active')
+        and expires_at > now()
+      order by created_at desc
+    `) as unknown as Array<RunRow>;
+    return rows.map(mapRun);
+  } catch {
+    return [];
+  }
+}
+
+// Active (triggered, unexpired) runs for the hot-path ops cache. Fails safe
+// to empty so the pricing path is never taken down by the demo machinery.
+export async function listActiveDemoOutageBindings(
+  sql: postgres.Sql,
+): Promise<DemoOutageBinding[]> {
+  try {
+    const rows = (await sql`
+      select id, booking_session_id
+      from public.ops_demo_outages
+      where status = 'active'
+        and expires_at > now()
+    `) as unknown as Array<{ id: string; booking_session_id: string | null }>;
+    return rows.map((row) => ({
+      outageId: row.id,
+      bookingSessionId: row.booking_session_id ?? null,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 export async function isDemoOutageActiveForSession(
@@ -328,6 +524,29 @@ export async function isDemoOutageActiveForSession(
   } catch {
     // A missing migration or transient lookup must never affect real bookings.
     return false;
+  }
+}
+
+// The active (triggered, unexpired) outage id bound to a booking session, or
+// null. Mirrors isDemoOutageActiveForSession but returns the outage id so a
+// scoped 500 can still be attributed when the hot-path cache is stale. Fails
+// safe to null so error attribution never affects real bookings.
+export async function activeDemoOutageIdForSession(
+  sql: postgres.Sql,
+  bookingSessionId: string,
+): Promise<string | null> {
+  try {
+    const rows = (await sql`
+      select id
+      from public.ops_demo_outages
+      where booking_session_id = ${bookingSessionId}
+        and status = 'active'
+        and expires_at > now()
+      limit 1
+    `) as unknown as Array<{ id: string }>;
+    return rows[0]?.id ?? null;
+  } catch {
+    return null;
   }
 }
 

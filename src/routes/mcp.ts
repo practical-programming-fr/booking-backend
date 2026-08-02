@@ -6,6 +6,7 @@ import {
   createDemoOutage,
   triggerDemoOutage,
 } from "../domain/demo-outage.js";
+import { invalidateOpsCache } from "../domain/ops.js";
 import { loadEnv } from "../env.js";
 import { createBookingMcpServer, type InternalFetch } from "../mcp/server.js";
 
@@ -33,6 +34,16 @@ function jsonRpcError(status: number, code: number, message: string): Response {
 export function mcpRoutes(options: McpRoutesOptions): Hono {
   const app = new Hono();
 
+  // Bearer gate. When FLYLO_MCP_TOKEN is set (production), every /mcp request
+  // must present it; unset keeps local dev open.
+  app.use("*", async (c, next) => {
+    const expected = loadEnv().FLYLO_MCP_TOKEN;
+    if (expected && c.req.header("authorization") !== `Bearer ${expected}`) {
+      return jsonRpcError(401, -32001, "Unauthorized");
+    }
+    return next();
+  });
+
   app.post("/", async (c) => {
     const env = loadEnv();
     const server = createBookingMcpServer({
@@ -40,8 +51,16 @@ export function mcpRoutes(options: McpRoutesOptions): Hono {
       env,
       demoOutages: {
         prepare: (input) => createDemoOutage(getSql(), input),
-        trigger: (demoSessionId) => triggerDemoOutage(getSql(), demoSessionId),
-        clear: (demoSessionId) => clearDemoOutage(getSql(), demoSessionId),
+        trigger: async (runHandle) => {
+          const triggered = await triggerDemoOutage(getSql(), runHandle);
+          invalidateOpsCache();
+          return triggered;
+        },
+        clear: async (runHandle) => {
+          const cleared = await clearDemoOutage(getSql(), runHandle);
+          invalidateOpsCache();
+          return cleared;
+        },
       },
     });
     const transport = new WebStandardStreamableHTTPServerTransport({

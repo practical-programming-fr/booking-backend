@@ -58,6 +58,12 @@ const envSchema = z
     // commit it.
     OPS_AGENT_TOKEN: z.string().min(1).optional(),
 
+    // Bearer token guarding the /mcp endpoint. When set, every /mcp request
+    // must send `Authorization: Bearer <FLYLO_MCP_TOKEN>` or it is rejected
+    // with 401 before any tool runs. Unset in local dev so MCP clients work
+    // without ceremony. Provide as a platform secret; never commit it.
+    FLYLO_MCP_TOKEN: z.string().min(1).optional(),
+
     // Shared secret guarding the /v1/_ops incident console. When set
     // (production), every /v1/_ops route requires
     // `Authorization: Bearer <OPS_SHARED_SECRET>`. Unset in local dev so the
