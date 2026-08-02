@@ -126,6 +126,7 @@ export async function assignSeats(
       const existingHold = (await tx`
         select session_id, booking_id from public.seat_holds
         where flight_id = ${segment.flight_id} and seat_id = ${assignment.seatId}
+          and expires_at > now()
       `) as unknown as Array<{ session_id: string; booking_id: string | null }>;
       if (existingHold.length > 0 && existingHold[0]!.session_id !== sessionId) {
         throw new DomainError(

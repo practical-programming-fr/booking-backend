@@ -1,5 +1,11 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
+import { getSql } from "../db/client.js";
+import {
+  clearDemoOutage,
+  createDemoOutage,
+  triggerDemoOutage,
+} from "../domain/demo-outage.js";
 import { loadEnv } from "../env.js";
 import { createBookingMcpServer, type InternalFetch } from "../mcp/server.js";
 
@@ -32,6 +38,11 @@ export function mcpRoutes(options: McpRoutesOptions): Hono {
     const server = createBookingMcpServer({
       internalFetch: options.internalFetch,
       env,
+      demoOutages: {
+        prepare: (input) => createDemoOutage(getSql(), input),
+        trigger: (demoSessionId) => triggerDemoOutage(getSql(), demoSessionId),
+        clear: (demoSessionId) => clearDemoOutage(getSql(), demoSessionId),
+      },
     });
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

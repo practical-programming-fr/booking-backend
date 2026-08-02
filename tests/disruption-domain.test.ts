@@ -401,10 +401,14 @@ function makeSql(db: Db): postgres.Sql {
       }
       return out;
     }
-    if (text.includes("select pax, promo_code from public.bookings where pnr = ?")) {
+    if (text.includes("select pax, promo_code") && text.includes("from public.bookings where pnr = ?")) {
       const [pnr] = v as [string];
       const booking = db.bookings.find((b) => b.pnr === pnr)!;
-      return [{ pax: booking.pax, promo_code: booking.promo_code ?? null }];
+      return [{
+        pax: booking.pax,
+        promo_code: booking.promo_code ?? null,
+        session_id: booking.session_id ?? "sess",
+      }];
     }
     if (text.includes("coalesce(sum(seat_price), 0)") && text.includes("distinct on")) {
       const [pnr] = v as [string];

@@ -127,45 +127,28 @@ If `CRON_SECRET` is configured, call this tool with the MCP HTTP
 
 | Tool | Required arguments | Optional arguments | Internal endpoint |
 |---|---|---|---|
-| `start_demo_outage` | none | `demoSessionId`, `slackChannel`, `ttlMinutes` | `POST /v1/_ops/demo-sessions` |
-| `clear_demo_outage` | `demoSessionId` | none | `DELETE /v1/_ops/demo-sessions/:demoSessionId` |
+| `prepare_demo_outage` | none | `ttlMinutes`, `slackChannel` | `public.ops_demo_outages` |
+| `start_demo_outage` | none | same as prepare | Alias for `prepare_demo_outage` |
+| `trigger_demo_outage` | `demoSessionId` | none | `public.ops_demo_outages` |
+| `clear_demo_outage` | `demoSessionId` | none | `public.ops_demo_outages` |
 
-These two tools arm and clear a per-person (scoped) booking outage so a
-presenter (or their agent) can break the booking site for their own demo
-session only, leaving every other caller healthy. They reuse
-`public.ops_demo_sessions`, including its Slack routing and incident metadata,
-through the internal `/v1/_ops/demo-sessions` routes. They do not flip the
-global `fare_adjustment_v2` flag.
+`prepare_demo_outage` creates a pending browser-scoped outage and returns a
+`demoSessionId`, expiry, and one-time `activationUrl`. Opening that URL binds
+the pending row to the browser's `x-booking-session`. Binding does not activate
+the outage. Pricing stays healthy until `trigger_demo_outage` changes the row
+from `pending` to `active`.
 
-`start_demo_outage` mints a fresh demo session id (or reuses a supplied
-`demoSessionId`), creates a one-time activation token, arms the scoped outage,
-and returns:
+`start_demo_outage` is a compatibility alias for prepare. It no longer starts
+pricing failures immediately.
 
-- `demoSessionId`: the scoped session id used to clear this run.
-- `activationUrl`: a one-time
-  `https://book.flylo-air.com/demo/activate?token=<token>` link. Open it in the
-  browser used for the demo. The frontend binds the outage to that browser's
-  normal `x-booking-session`, removes the token from the URL, and redirects to
-  `/`.
-- `bookingSearchUrl`: the old `?demo=<demoSessionId>` booking link, kept for
-  compatibility. Prefer `activationUrl`.
-- `crewNocUrl`: `https://crew.flylo-air.com/ops?demo=<demoSessionId>`.
-- `ttlMinutes` and `expiresAt`: the outage lifetime (default 20 minutes,
-  capped at 60).
-- `scope`: always `per-session`.
-- `slackChannel`: the personal channel the session's incident alerts route to,
-  or null.
-- `instructions`: short guidance for activation and cleanup.
+`trigger_demo_outage` requires a bound pending row. It returns
+`outage_not_bound` if the activation URL has not been opened. Once triggered,
+pricing requests from the bound browser fail while other browsers remain
+healthy.
 
-For parallel demos, each presenter creates or chooses a Slack channel, invites
-the FlyLo Ops app, then asks Cursor to start the outage in that channel. Cursor
-passes the channel name or ID as `slackChannel`. Detection is the root message;
-the agent summary, fix PR, and recovery are replies in that thread. Each
-presenter still receives a separate browser activation and `demoSessionId`, so
-both the outage and its incident conversation remain isolated.
-
-`clear_demo_outage` disarms only the named session's outage; other sessions and
-the global flag are untouched.
+`clear_demo_outage` clears only the named pending or active outage. The global
+`fare_adjustment_v2` flag and other presenters remain unchanged. The default
+TTL is 20 minutes and the maximum is 60 minutes.
 
 Both tools run server-side inside booking-backend. When `OPS_SHARED_SECRET` is
 configured they inject the `Authorization: Bearer <OPS_SHARED_SECRET>` header
@@ -382,7 +365,7 @@ curl -sS http://localhost:8787/mcp \
   }'
 ```
 
-### Start a scoped demo outage
+### Prepare a scoped demo outage
 
 ```bash
 curl -sS http://localhost:8787/mcp \
@@ -393,7 +376,7 @@ curl -sS http://localhost:8787/mcp \
     "id": 8,
     "method": "tools/call",
     "params": {
-      "name": "start_demo_outage",
+      "name": "prepare_demo_outage",
       "arguments": {
         "slackChannel": "#incident-talal",
         "ttlMinutes": 20
@@ -402,12 +385,11 @@ curl -sS http://localhost:8787/mcp \
   }'
 ```
 
-The result includes the minted `demoSessionId`, a one-time `activationUrl`,
-compatibility links for booking and crew, and the TTL. Open `activationUrl` in
-the browser used for the demo. After the redirect, normal navigation keeps the
-500s scoped to that browser.
+The result includes a `demoSessionId`, one-time `activationUrl`, and TTL. Open
+`activationUrl` in the presenter browser. The browser is bound but remains
+healthy.
 
-### Clear a scoped demo outage
+### Trigger a scoped demo outage
 
 ```bash
 curl -sS http://localhost:8787/mcp \
@@ -418,9 +400,31 @@ curl -sS http://localhost:8787/mcp \
     "id": 9,
     "method": "tools/call",
     "params": {
+      "name": "trigger_demo_outage",
+      "arguments": {
+        "demoSessionId": "<demoSessionId from prepare_demo_outage>"
+      }
+    }
+  }'
+```
+
+Trigger changes the bound row from `pending` to `active`. Pricing requests from
+that browser now fail.
+
+### Clear a scoped demo outage
+
+```bash
+curl -sS http://localhost:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "tools/call",
+    "params": {
       "name": "clear_demo_outage",
       "arguments": {
-        "demoSessionId": "<demoSessionId from start_demo_outage>"
+        "demoSessionId": "<demoSessionId from prepare_demo_outage>"
       }
     }
   }'
@@ -432,10 +436,11 @@ curl -sS http://localhost:8787/mcp \
 - MCP HTTP route: `src/routes/mcp.ts`
 - Tool registration and internal `/v1` forwarding: `src/mcp/server.ts`
 - Activation route: `src/routes/demo.ts`
-- Scoped session storage, binding, cache, and request guard: `src/domain/ops.ts`
-- Activation token hashing: `src/lib/demo-activation.ts`
-- Browser-binding migration:
-  `supabase/migrations/20260801143000_ops_demo_session_booking_bind.sql`
+- Outage lifecycle and activation-token hashing: `src/domain/demo-outage.ts`
+- Pricing request guard: `src/domain/ops.ts`
+- Browser-scoped outage migrations:
+  `supabase/migrations/20260801140000_ops_demo_outages.sql` and
+  `supabase/migrations/20260801150000_ops_demo_outages_bound_session_idx.sql`
 - Jira client for `request_marketing_change`: `src/lib/jira.ts`
 - Route/tool-call tests: `tests/mcp-routes.test.ts`
 - Activation and scoped-session tests: `tests/demo-activation-routes.test.ts`,
@@ -462,11 +467,10 @@ The MCP tests cover:
 - transport header validation.
 - tool-call forwarding of `x-booking-session`.
 - tool-call forwarding of `Authorization` for the maintenance sweep.
-- `start_demo_outage` / `clear_demo_outage`: arming returns a session id and
-  one-time activation URL, TTL handling and reuse of a supplied
-  `demoSessionId`, server-side `OPS_SHARED_SECRET` injection, clearing the named
-  session, backend-failure surfacing, and an end-to-end arm/clear through the
-  `/mcp` route.
+- `prepare_demo_outage`, its `start_demo_outage` alias,
+  `trigger_demo_outage`, and `clear_demo_outage`.
+- Bind-only activation, trigger-before-bind rejection, active-state pricing,
+  and scoped recovery.
 - `request_marketing_change` graceful degradation when Jira is not
   configured. The Jira client itself (ADF body shape, Basic auth header, and
   the not-configured path) is unit-tested with `fetch` mocked in

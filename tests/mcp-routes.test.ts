@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
+  DemoOutageTriggerError,
+  type DemoOutage,
+  type TriggeredDemoOutage,
+} from "../src/domain/demo-outage.js";
+import {
   createBookingMcpServer,
   type InternalFetch,
 } from "../src/mcp/server.js";
@@ -17,36 +22,99 @@ const mcpHeaders = {
   Accept: "application/json, text/event-stream",
 };
 
-const stubMcpEnv = {
-  BOOKING_SESSION_HEADER: "x-booking-session",
-  DEMO_BOOKING_WEB_URL: "https://book.flylo-air.com",
-  DEMO_CREW_WEB_URL: "https://crew.flylo-air.com",
-} as const;
+const DEMO_SESSION_ID = "22222222-2222-4222-8222-222222222222";
+const BOOKING_SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
-type FakeFetchOptions = {
-  respond?: (path: string, init?: RequestInit) => Response;
-  env?: Partial<Parameters<typeof createBookingMcpServer>[0]["env"]>;
-};
+function createStatefulDemoOutages() {
+  let prepared: DemoOutage | null = null;
+  let bound = false;
+  let active = false;
+  let cleared = false;
+
+  return {
+    prepare: async (input: {
+      ttlMinutes?: number;
+      slackChannel?: string | null;
+    }): Promise<DemoOutage> => {
+      prepared = {
+        demoSessionId: DEMO_SESSION_ID,
+        activationToken: "test-activation-token",
+        expiresAt: "2026-08-01T14:00:00.000Z",
+        ttlMinutes: input.ttlMinutes ?? 20,
+      };
+      bound = false;
+      active = false;
+      cleared = false;
+      return prepared;
+    },
+    bindForTests: () => {
+      if (!prepared || cleared) {
+        throw new Error("nothing to bind");
+      }
+      bound = true;
+    },
+    trigger: async (demoSessionId: string): Promise<TriggeredDemoOutage> => {
+      if (!prepared || prepared.demoSessionId !== demoSessionId || cleared) {
+        throw new DemoOutageTriggerError(
+          "outage_not_found",
+          "No scoped demo outage matched that id.",
+        );
+      }
+      if (!bound) {
+        throw new DemoOutageTriggerError(
+          "outage_not_bound",
+          "Open the activation URL in the presenter browser before triggering the outage.",
+        );
+      }
+      if (active) {
+        throw new DemoOutageTriggerError(
+          "outage_not_pending",
+          "This scoped demo outage is not waiting to be triggered.",
+        );
+      }
+      active = true;
+      return {
+        demoSessionId,
+        bookingSessionId: BOOKING_SESSION_ID,
+        expiresAt: prepared.expiresAt,
+      };
+    },
+    clear: async (demoSessionId: string): Promise<boolean> => {
+      if (!prepared || prepared.demoSessionId !== demoSessionId || cleared) {
+        return false;
+      }
+      if (!bound && !active) {
+        cleared = true;
+        return true;
+      }
+      cleared = true;
+      active = false;
+      return true;
+    },
+  };
+}
 
 async function callToolWithFakeFetch(
   name: string,
   args: Record<string, unknown>,
   headers: Record<string, string> = {},
-  options: FakeFetchOptions = {},
+  demoOutages = createStatefulDemoOutages(),
 ) {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const internalFetch: InternalFetch = async (path, init) => {
     calls.push({ path, init });
-    if (options.respond) {
-      return options.respond(path, init);
-    }
     return new Response(JSON.stringify({ ok: true, path }), {
       headers: { "Content-Type": "application/json" },
     });
   };
   const server = createBookingMcpServer({
     internalFetch,
-    env: { ...stubMcpEnv, ...options.env },
+    env: {
+      BOOKING_SESSION_HEADER: "x-booking-session",
+      DEMO_BOOKING_WEB_URL: "https://book.flylo-air.com",
+      DEMO_CREW_WEB_URL: "https://crew.flylo-air.com",
+    },
+    demoOutages,
   });
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -68,7 +136,7 @@ async function callToolWithFakeFetch(
       }),
     );
     const body = (await res.json()) as unknown;
-    return { calls, res, body };
+    return { calls, res, body, demoOutages };
   } finally {
     await transport.close().catch(() => undefined);
     await server.close().catch(() => undefined);
@@ -135,25 +203,10 @@ describe("mcp route", () => {
     expect(toolNames).toContain("create_booking");
     expect(toolNames).toContain("release_expired_holds");
     expect(toolNames).toContain("request_marketing_change");
+    expect(toolNames).toContain("prepare_demo_outage");
     expect(toolNames).toContain("start_demo_outage");
+    expect(toolNames).toContain("trigger_demo_outage");
     expect(toolNames).toContain("clear_demo_outage");
-
-    // The scoped demo-outage tools must never take an ops secret as an
-    // argument; the server injects OPS_SHARED_SECRET itself.
-    const startDemoOutage = body.result.tools.find(
-      (tool) => tool.name === "start_demo_outage",
-    );
-    expect(startDemoOutage?.inputSchema?.properties).not.toHaveProperty(
-      "opsSharedSecret",
-    );
-    expect(startDemoOutage?.inputSchema?.properties).not.toHaveProperty(
-      "authorization",
-    );
-    expect(
-      startDemoOutage?.inputSchema?.properties?.slackChannel,
-    ).toMatchObject({
-      description: expect.stringContaining("FlyLo Ops"),
-    });
 
     const createBooking = body.result.tools.find((tool) => tool.name === "create_booking");
     expect(createBooking?.inputSchema?.properties).not.toHaveProperty("sessionId");
@@ -162,69 +215,6 @@ describe("mcp route", () => {
       (tool) => tool.name === "release_expired_holds",
     );
     expect(releaseExpiredHolds?.inputSchema?.properties).not.toHaveProperty("cronSecret");
-  });
-
-  it("arms and clears a scoped demo outage end-to-end through the /mcp route", async () => {
-    stubEnv();
-    // No OPS_SHARED_SECRET in dev: the internal /v1/_ops routes are open, and
-    // the scoped session data layer fails safe to a computed row without a live
-    // DB, so this exercises the full MCP -> /v1/_ops wiring.
-    delete process.env.OPS_SHARED_SECRET;
-    const { buildApp } = await import("../src/app.js");
-    const app = buildApp();
-
-    const startRes = await app.request("/mcp", {
-      method: "POST",
-      headers: mcpHeaders,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 10,
-        method: "tools/call",
-        params: {
-          name: "start_demo_outage",
-          arguments: { ttlMinutes: 5 },
-        },
-      }),
-    });
-    expect(startRes.status).toBe(200);
-    const startBody = (await startRes.json()) as {
-      result: {
-        structuredContent: {
-          demoSessionId: string;
-          ok: boolean;
-          activationUrl: string;
-        };
-      };
-    };
-    expect(startBody.result.structuredContent.ok).toBe(true);
-    const sessionId = startBody.result.structuredContent.demoSessionId;
-    expect(sessionId).toMatch(/[0-9a-f-]{36}/i);
-    expect(startBody.result.structuredContent.activationUrl).toMatch(
-      /^https:\/\/book\.flylo-air\.com\/demo\/activate\?token=.+/,
-    );
-
-    const clearRes = await app.request("/mcp", {
-      method: "POST",
-      headers: mcpHeaders,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 11,
-        method: "tools/call",
-        params: {
-          name: "clear_demo_outage",
-          arguments: { demoSessionId: sessionId },
-        },
-      }),
-    });
-    expect(clearRes.status).toBe(200);
-    const clearBody = (await clearRes.json()) as {
-      result: { structuredContent: { ok: boolean; cleared: boolean; demoSessionId: string } };
-    };
-    expect(clearBody.result.structuredContent).toMatchObject({
-      ok: true,
-      cleared: true,
-      demoSessionId: sessionId,
-    });
   });
 
   it("rejects invalid MCP transport headers before tool execution", async () => {
@@ -255,7 +245,7 @@ describe("mcp route", () => {
         cabin: "L",
         pax: 1,
       },
-      { "x-booking-session": "11111111-1111-4111-8111-111111111111" },
+      { "x-booking-session": BOOKING_SESSION_ID },
     );
 
     expect(calls).toHaveLength(1);
@@ -263,7 +253,7 @@ describe("mcp route", () => {
     expect(calls[0]?.init?.method).toBe("POST");
     expect(calls[0]?.init?.headers).toMatchObject({
       "Content-Type": "application/json",
-      "x-booking-session": "11111111-1111-4111-8111-111111111111",
+      "x-booking-session": BOOKING_SESSION_ID,
     });
     expect(calls[0]?.init?.body).toBe(
       JSON.stringify({
@@ -293,10 +283,10 @@ describe("mcp route", () => {
     expect(body).toMatchObject({ result: { structuredContent: { ok: true } } });
   });
 
-  it("request_marketing_change degrades gracefully when Jira is not configured", async () => {
+  it("request_marketing_change reports when Jira is not configured", async () => {
     const { body } = await callToolWithFakeFetch("request_marketing_change", {
-      title: "Flash sale banner + FLASH20",
-      description: "Add a weekend flash-sale banner and a 20 percent off code.",
+      title: "Flash sale banner",
+      description: "Add a weekend flash-sale banner.",
       promoCode: "FLASH20",
       discountPercent: 20,
     });
@@ -309,132 +299,124 @@ describe("mcp route", () => {
     });
   });
 
-  it("start_demo_outage arms a scoped session and returns a session id plus links", async () => {
-    const expiresAt = "2026-07-11T00:20:00.000Z";
-    const { calls, body } = await callToolWithFakeFetch(
-      "start_demo_outage",
-      { slackChannel: "#incident-talal", ttlMinutes: 15 },
-      {},
-      {
-        respond: (path) =>
-          new Response(
-            JSON.stringify({
-              session: {
-                id: "generated",
-                sessionId: "generated",
-                kind: "outage",
-                slackChannel: "#incident-talal",
-                runFullArc: true,
-                createdAt: "2026-07-11T00:05:00.000Z",
-                expiresAt,
-              },
-            }),
-            { status: 201, headers: { "Content-Type": "application/json" } },
-          ),
+  it("prepare_demo_outage returns a bind-only activation URL", async () => {
+    const { calls, body } = await callToolWithFakeFetch("prepare_demo_outage", {
+      ttlMinutes: 20,
+    });
+
+    expect(calls).toHaveLength(0);
+    expect(body).toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          demoSessionId: DEMO_SESSION_ID,
+          scope: "browser-session",
+          activationUrl:
+            "https://book.flylo-air.com/demo/activate?token=test-activation-token",
+          ttlMinutes: 20,
+          expiresAt: "2026-08-01T14:00:00.000Z",
+        },
       },
-    );
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.path).toBe("/v1/_ops/demo-sessions");
-    expect(calls[0]?.init?.method).toBe("POST");
-
-    const requestBody = JSON.parse(String(calls[0]?.init?.body)) as {
-      sessionId: string;
-      ttlSeconds: number;
-      slackChannel: string;
-      activationTokenHash: string;
-    };
-    expect(requestBody.ttlSeconds).toBe(15 * 60);
-    expect(requestBody.slackChannel).toBe("#incident-talal");
-    expect(requestBody.sessionId).toMatch(/[0-9a-f-]{36}/i);
-    expect(requestBody.activationTokenHash).toMatch(/^[a-f0-9]{64}$/);
-
-    const result = (body as { result: { structuredContent: Record<string, unknown> } })
-      .result.structuredContent;
-    expect(result.ok).toBe(true);
-    expect(result.scope).toBe("per-session");
-    expect(result.ttlMinutes).toBe(15);
-    expect(result.expiresAt).toBe(expiresAt);
-    expect(result.demoSessionId).toBe(requestBody.sessionId);
-    expect(result.activationUrl).toMatch(
-      /^https:\/\/book\.flylo-air\.com\/demo\/activate\?token=.+/,
-    );
-    expect(result.bookingSearchUrl).toBe(
-      `https://book.flylo-air.com/search?demo=${requestBody.sessionId}`,
-    );
-    expect(result.crewNocUrl).toBe(
-      `https://crew.flylo-air.com/ops?demo=${requestBody.sessionId}`,
-    );
-    expect(result.instructions).toContain("#incident-talal");
-    // No secret leaks into the response.
-    expect(JSON.stringify(result)).not.toMatch(/OPS_SHARED_SECRET|Bearer/i);
+    });
+    const instructions = (
+      body as {
+        result: { structuredContent: { instructions: string } };
+      }
+    ).result.structuredContent.instructions;
+    expect(instructions).toMatch(/BIND/i);
+    expect(instructions).toMatch(/trigger_demo_outage/);
   });
 
-  it("start_demo_outage reuses a supplied demoSessionId and defaults the TTL", async () => {
-    const { calls, body } = await callToolWithFakeFetch("start_demo_outage", {
-      demoSessionId: "sess-reuse-1",
+  it("start_demo_outage remains a prepare alias", async () => {
+    const { body } = await callToolWithFakeFetch("start_demo_outage", {
+      ttlMinutes: 20,
     });
 
-    const requestBody = JSON.parse(String(calls[0]?.init?.body)) as {
-      sessionId: string;
-      ttlSeconds: number;
-    };
-    expect(requestBody.sessionId).toBe("sess-reuse-1");
-    expect(requestBody.ttlSeconds).toBe(20 * 60);
-
-    const result = (body as { result: { structuredContent: Record<string, unknown> } })
-      .result.structuredContent;
-    expect(result.demoSessionId).toBe("sess-reuse-1");
-    expect(result.ttlMinutes).toBe(20);
-  });
-
-  it("start_demo_outage injects OPS_SHARED_SECRET server-side when configured", async () => {
-    const { calls } = await callToolWithFakeFetch(
-      "start_demo_outage",
-      { demoSessionId: "sess-auth" },
-      {},
-      { env: { OPS_SHARED_SECRET: "top-secret" } },
-    );
-
-    expect(calls[0]?.init?.headers).toMatchObject({
-      Authorization: "Bearer top-secret",
+    expect(body).toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          demoSessionId: DEMO_SESSION_ID,
+          activationUrl:
+            "https://book.flylo-air.com/demo/activate?token=test-activation-token",
+        },
+      },
     });
   });
 
-  it("clear_demo_outage disarms only the named scoped session", async () => {
-    const { calls, body } = await callToolWithFakeFetch("clear_demo_outage", {
-      demoSessionId: "sess-clear-1",
-    });
+  it("trigger_demo_outage fails before the browser is bound", async () => {
+    const demoOutages = createStatefulDemoOutages();
+    await callToolWithFakeFetch("prepare_demo_outage", { ttlMinutes: 20 }, {}, demoOutages);
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.path).toBe("/v1/_ops/demo-sessions/sess-clear-1");
-    expect(calls[0]?.init?.method).toBe("DELETE");
-
-    const result = (body as { result: { structuredContent: Record<string, unknown> } })
-      .result.structuredContent;
-    expect(result.ok).toBe(true);
-    expect(result.cleared).toBe(true);
-    expect(result.demoSessionId).toBe("sess-clear-1");
-  });
-
-  it("clear_demo_outage surfaces a backend failure as an error result", async () => {
     const { body } = await callToolWithFakeFetch(
-      "clear_demo_outage",
-      { demoSessionId: "sess-fail" },
+      "trigger_demo_outage",
+      { demoSessionId: DEMO_SESSION_ID },
       {},
-      {
-        respond: () =>
-          new Response(JSON.stringify({ error: { message: "boom", status: 500 } }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          }),
-      },
+      demoOutages,
     );
 
     expect(body).toMatchObject({
       result: {
         isError: true,
-        structuredContent: { ok: false, demoSessionId: "sess-fail" },
+        structuredContent: {
+          ok: false,
+          demoSessionId: DEMO_SESSION_ID,
+          code: "outage_not_bound",
+        },
+      },
+    });
+  });
+
+  it("trigger_demo_outage succeeds after a simulated bind", async () => {
+    const demoOutages = createStatefulDemoOutages();
+    await callToolWithFakeFetch("prepare_demo_outage", { ttlMinutes: 20 }, {}, demoOutages);
+    demoOutages.bindForTests();
+
+    const { body } = await callToolWithFakeFetch(
+      "trigger_demo_outage",
+      { demoSessionId: DEMO_SESSION_ID },
+      {},
+      demoOutages,
+    );
+
+    expect(body).toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          demoSessionId: DEMO_SESSION_ID,
+          bookingSessionId: BOOKING_SESSION_ID,
+          expiresAt: "2026-08-01T14:00:00.000Z",
+        },
+      },
+    });
+  });
+
+  it("clears only the requested scoped outage", async () => {
+    const demoOutages = createStatefulDemoOutages();
+    await callToolWithFakeFetch("prepare_demo_outage", { ttlMinutes: 20 }, {}, demoOutages);
+    demoOutages.bindForTests();
+    await callToolWithFakeFetch(
+      "trigger_demo_outage",
+      { demoSessionId: DEMO_SESSION_ID },
+      {},
+      demoOutages,
+    );
+
+    const { calls, body } = await callToolWithFakeFetch(
+      "clear_demo_outage",
+      { demoSessionId: DEMO_SESSION_ID },
+      {},
+      demoOutages,
+    );
+
+    expect(calls).toHaveLength(0);
+    expect(body).toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          demoSessionId: DEMO_SESSION_ID,
+          cleared: true,
+        },
       },
     });
   });

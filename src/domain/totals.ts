@@ -4,6 +4,8 @@
 
 import type postgres from "postgres";
 import type { BookingTotals } from "./types.js";
+import { fuelSurchargeEur } from "./fare-adjustment.js";
+import { isOutageActiveForRequest } from "./ops.js";
 import { computePromoDiscountEur, lookupPromo } from "./promo.js";
 
 export async function recomputeBookingTotals(
@@ -12,21 +14,32 @@ export async function recomputeBookingTotals(
 ): Promise<BookingTotals> {
   // We expect exactly one segment in v1, but the query supports many.
   const fareRows = (await sql`
-    select bs.cabin, ff.base_eur, ff.taxes_eur, ff.surface_eur
+    select bs.cabin, ff.base_eur, ff.taxes_eur, ff.surface_eur,
+           r.from_iata, r.to_iata
     from public.booking_segments bs
     join public.flight_fares ff
       on ff.flight_id = bs.flight_id and ff.cabin = bs.cabin
+    join public.flights f on f.id = bs.flight_id
+    join public.routes r on r.id = f.route_id
     where bs.booking_pnr = ${pnr}
   `) as unknown as Array<{
     cabin: string;
     base_eur: number;
     taxes_eur: number;
     surface_eur: number;
+    from_iata: string;
+    to_iata: string;
   }>;
 
   const bookingRow = (await sql`
-    select pax, promo_code from public.bookings where pnr = ${pnr}
-  `) as unknown as Array<{ pax: number; promo_code: string | null }>;
+    select pax, promo_code, session_id
+    from public.bookings
+    where pnr = ${pnr}
+  `) as unknown as Array<{
+    pax: number;
+    promo_code: string | null;
+    session_id: string;
+  }>;
   if (bookingRow.length === 0) {
     throw new Error(`Booking ${pnr} not found`);
   }
@@ -75,7 +88,25 @@ export async function recomputeBookingTotals(
   `) as unknown as Array<{ meals_eur: number }>;
   const mealsEur = mealSumRows[0]?.meals_eur ?? 0;
 
-  const preDiscountTotal = baseEur + seatsEur + mealsEur + taxesEur + surfaceEur;
+  const surchargeOn = await isOutageActiveForRequest(sql, {
+    bookingSessionId: bookingRow[0]!.session_id,
+  });
+  const fuelEur = surchargeOn
+    ? fareRows.reduce(
+        (sum, row) =>
+          sum +
+          fuelSurchargeEur({
+            origin: row.from_iata,
+            destination: row.to_iata,
+            baseEur: row.base_eur,
+            pax,
+          }),
+        0,
+      )
+    : 0;
+
+  const preDiscountTotal =
+    baseEur + seatsEur + mealsEur + taxesEur + surfaceEur + fuelEur;
 
   // Apply a promo discount to the fare components only (never taxes). With no
   // promo the discount is 0 and the total matches the pre-discount sum, so

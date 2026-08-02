@@ -256,3 +256,15 @@ export const opsIncidents = pgTable("ops_incidents", {
   greenTicks: integer("green_ticks").notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const opsDemoOutages = pgTable("ops_demo_outages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  activationTokenHash: text("activation_token_hash").notNull().unique(),
+  bookingSessionId: uuid("booking_session_id"),
+  slackChannel: text("slack_channel"),
+  status: text("status").notNull().default("pending"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  activatedAt: timestamp("activated_at", { withTimezone: true }),
+  clearedAt: timestamp("cleared_at", { withTimezone: true }),
+});

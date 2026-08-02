@@ -180,6 +180,8 @@ The MCP tools mirror the `/v1` HTTP API:
 - maintenance: `release_expired_holds`
 - marketing: `request_marketing_change` (files a marketing-request ticket
   into Jira; see below)
+- demos: `prepare_demo_outage`, `trigger_demo_outage`,
+  `clear_demo_outage` (`start_demo_outage` is a prepare alias)
 
 Tools that operate on owned bookings forward the same
 `x-booking-session: <uuid>` HTTP header sent to `/mcp`; the session UUID is
@@ -187,6 +189,13 @@ not a tool argument. `get_booking` can instead use `email` for the same
 guest retrieval flow as `/v1/bookings/:pnr?email=...`. If `CRON_SECRET` is
 configured, call `release_expired_holds` with the matching
 `Authorization: Bearer <secret>` HTTP header on the `/mcp` request.
+
+For a presenter-safe outage, call `prepare_demo_outage` and open its
+one-time `activationUrl` in the presenter browser. This binds the pending
+outage to that browser without changing pricing. Call `trigger_demo_outage`
+with the returned `demoSessionId` to activate pricing failures, then call
+`clear_demo_outage` to recover that browser. Other browsers and the global
+outage flag remain unchanged.
 
 For the full tool inventory, argument schemas, header requirements,
 JSON-RPC examples, and implementation map, see [`docs/mcp.md`](./docs/mcp.md).

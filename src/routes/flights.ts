@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
-import { and, asc, between, eq, gte, sql } from "drizzle-orm";
+import { and, asc, between, eq, gt, sql } from "drizzle-orm";
 import { getDb, getSql } from "../db/client.js";
 import {
   aircraftTypes,
@@ -11,6 +11,7 @@ import {
   flightSeats,
   flights,
   routes,
+  seatHolds,
   seatMapTemplates,
 } from "../db/schema.js";
 import { loadFlightBriefing, loadFlightManifest } from "../domain/manifest.js";
@@ -193,6 +194,10 @@ export function flightsRoutes(): Hono {
     }
 
     const route = matchingRoutes[0]!;
+    const surchargeOn = await isOutageActiveForRequest(getSql(), {
+      demoSessionId: demoSessionIdFrom(c),
+      bookingSessionId: bookingSessionIdFrom(c),
+    });
 
     const rows = await db
       .select({
@@ -218,11 +223,22 @@ export function flightsRoutes(): Hono {
       to,
       month,
       cabin,
-      days: rows.map((row) => ({
-        date: row.date,
-        fromEur: Number(row.minBase),
-        flights: Number(row.flightCount),
-      })),
+      days: rows.map((row) => {
+        const fromEur = Number(row.minBase);
+        const surcharge = surchargeOn
+          ? fuelSurchargeEur({
+              origin: route.fromIata,
+              destination: route.toIata,
+              baseEur: fromEur,
+              pax: 1,
+            })
+          : 0;
+        return {
+          date: row.date,
+          fromEur: fromEur + surcharge,
+          flights: Number(row.flightCount),
+        };
+      }),
     });
   });
 
@@ -402,17 +418,14 @@ export function flightsRoutes(): Hono {
         ),
       );
 
-    const holds = await db
-      .select()
-      .from(flightSeats)
-      .where(
-        and(
-          eq(flightSeats.flightId, id),
-          eq(flightSeats.cabin, cabin),
-          gte(flightSeats.priceEur, 0),
-        ),
-      )
-      .limit(0); // placeholder for seat_holds join in next iteration
+    const now = new Date();
+    const activeHolds = await db
+      .select({ seatId: seatHolds.seatId, expiresAt: seatHolds.expiresAt })
+      .from(seatHolds)
+      .where(and(eq(seatHolds.flightId, id), gt(seatHolds.expiresAt, now)));
+    const holdBySeat = new Map(
+      activeHolds.map((hold) => [hold.seatId, hold.expiresAt]),
+    );
 
     return c.json({
       flight: {
@@ -422,14 +435,25 @@ export function flightsRoutes(): Hono {
       },
       cabin,
       layout: layoutRow.layout,
-      seats: seats.map((seat) => ({
-        seatId: seat.seatId,
-        zone: seat.zone,
-        priceEur: seat.priceEur,
-        status: seat.status,
+      seats: seats.map((seat) => {
+        const heldUntil = holdBySeat.get(seat.seatId) ?? null;
+        const status = heldUntil
+          ? "held"
+          : seat.status === "held"
+            ? "available"
+            : seat.status;
+        return {
+          seatId: seat.seatId,
+          zone: seat.zone,
+          priceEur: seat.priceEur,
+          status,
+          heldUntil: heldUntil ? heldUntil.toISOString() : null,
+        };
+      }),
+      holds: activeHolds.map((hold) => ({
+        seatId: hold.seatId,
+        expiresAt: hold.expiresAt.toISOString(),
       })),
-      // Reserved for the next iteration when seat_holds are wired in.
-      holds: holds.map(() => null),
     });
   });
 

@@ -3,6 +3,10 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { getSql } from "../db/client.js";
 import {
+  activateDemoOutage,
+  DemoOutageActivationError,
+} from "../domain/demo-outage.js";
+import {
   bindDemoSessionToBooking,
   DemoSessionActivationError,
 } from "../domain/ops.js";
@@ -31,13 +35,28 @@ export function demoRoutes(): Hono {
     }
 
     try {
-      const activation = await bindDemoSessionToBooking(getSql(), {
+      const input = {
         activationToken: c.req.valid("json").token,
         bookingSessionId,
-      });
+      };
+      let activation: Awaited<ReturnType<typeof activateDemoOutage>>;
+      try {
+        activation = await activateDemoOutage(getSql(), input);
+      } catch (error) {
+        if (
+          !(error instanceof DemoOutageActivationError) ||
+          error.code !== "activation_not_found"
+        ) {
+          throw error;
+        }
+        activation = await bindDemoSessionToBooking(getSql(), input);
+      }
       return c.json({ ok: true, ...activation });
     } catch (error) {
-      if (error instanceof DemoSessionActivationError) {
+      if (
+        error instanceof DemoOutageActivationError ||
+        error instanceof DemoSessionActivationError
+      ) {
         return c.json(
           {
             error: {

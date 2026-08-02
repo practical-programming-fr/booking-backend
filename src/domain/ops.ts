@@ -10,6 +10,10 @@
 import type postgres from "postgres";
 import { loadEnv } from "../env.js";
 import { hashDemoActivationToken } from "../lib/demo-activation.js";
+import {
+  clearAllDemoOutages,
+  isDemoOutageActiveForSession,
+} from "./demo-outage.js";
 
 export const FARE_ADJUSTMENT_FLAG = "fare_adjustment_v2";
 
@@ -531,7 +535,9 @@ export async function isOutageActiveForRequest(
   ) {
     return true;
   }
-  return false;
+  return identity.bookingSessionId
+    ? isDemoOutageActiveForSession(sql, identity.bookingSessionId)
+    : false;
 }
 
 export function cachedDemoSessionIdForRequest(identity: {
@@ -800,6 +806,7 @@ export async function updateIncident(
 export async function resetOps(sql: postgres.Sql): Promise<void> {
   await setFlag(sql, FARE_ADJUSTMENT_FLAG, false);
   await setFlag(sql, TRAFFIC_SPIKE_FLAG, false);
+  await clearAllDemoOutages(sql);
   await sql`truncate table public.ops_errors restart identity`;
   await sql`
     update public.ops_incidents
