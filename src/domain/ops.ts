@@ -187,18 +187,17 @@ export async function resolveDemoSessionIdForRequest(
     bookingSessionId?: string;
   },
 ): Promise<string | null> {
-  if (cachedGlobalOutageActive()) {
+  const cache = await getOpsCache(sql);
+  if (cache.globalOutage) {
     return null;
   }
-  if (opsCache) {
-    if (identity.demoSessionId && opsCache.activeOutageIds.has(identity.demoSessionId)) {
-      return identity.demoSessionId;
-    }
-    if (identity.bookingSessionId) {
-      const bound = opsCache.boundBookingSessions.get(identity.bookingSessionId);
-      if (bound) {
-        return bound;
-      }
+  if (identity.demoSessionId && cache.activeOutageIds.has(identity.demoSessionId)) {
+    return identity.demoSessionId;
+  }
+  if (identity.bookingSessionId) {
+    const bound = cache.boundBookingSessions.get(identity.bookingSessionId);
+    if (bound) {
+      return bound;
     }
   }
   return identity.bookingSessionId
