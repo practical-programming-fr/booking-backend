@@ -81,14 +81,15 @@ else
   list_http="000"
 fi
 
-if ! is_success_status "$list_http"; then
-  echo "::warning::Vercel deployment list failed (HTTP ${list_http}). Wait-for-health will still gate migrate/ops."
-  write_status "failed: API deployment list HTTP ${list_http}"
-  exit 0
+list_succeeded=false
+if is_success_status "$list_http"; then
+  list_succeeded=true
+else
+  echo "::warning::Vercel deployment list failed (HTTP ${list_http}). Trying gitSource creation."
 fi
 
 deployment_id=""
-if command -v jq >/dev/null 2>&1; then
+if [ "$list_succeeded" = "true" ] && command -v jq >/dev/null 2>&1; then
   deployment_id="$(jq -r --arg sha "$target_sha" '
     first(
       .deployments[]?
@@ -139,7 +140,11 @@ if [ -n "$deployment_id" ] && [ "$deployment_id" != "null" ]; then
     fi
   fi
 else
-  echo "No READY deployment found for ${target_sha}."
+  if [ "$list_succeeded" = "true" ]; then
+    echo "No READY deployment found for ${target_sha}."
+  else
+    echo "Deployment list unavailable. Creating directly from gitSource."
+  fi
   repository="$GITHUB_REPOSITORY"
   organization="${repository%%/*}"
   repository_name="${repository#*/}"

@@ -22,7 +22,8 @@ type Scenario =
   | "api-success"
   | "api-redeploy-404"
   | "api-no-ready"
-  | "api-list-403";
+  | "api-list-403"
+  | "api-list-network-error";
 
 interface RunOptions {
   scenario: Scenario;
@@ -82,7 +83,11 @@ if (kind === "hook") {
     status = "500";
   }
 } else if (kind === "api-list") {
-  if (scenario === "api-list-403") {
+  if (scenario === "api-list-network-error") {
+    status = "000";
+    body = "";
+    exitCode = 7;
+  } else if (scenario === "api-list-403") {
     status = "403";
     body = JSON.stringify({
       error: { message: process.env.RESPONSE_SECRET },
@@ -357,7 +362,7 @@ describe("nightly Vercel redeploy", () => {
     );
   });
 
-  it("classifies a deployment-list HTTP 403 as an API failure", () => {
+  it("creates from gitSource after a deployment-list HTTP 403", () => {
     const result = runRedeploy({
       scenario: "api-list-403",
       token: apiToken,
@@ -365,11 +370,28 @@ describe("nightly Vercel redeploy", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.calls).toEqual(["api-list"]);
+    expect(result.calls).toEqual(["api-list", "api-create"]);
     expect(result.writtenEnvironment).toContain(
-      "VERCEL_REDEPLOY_STATUS=failed: API deployment list HTTP 403",
+      "VERCEL_REDEPLOY_STATUS=triggered via API redeploy",
     );
     expect(result.output).not.toContain("No READY deployment found");
+  });
+
+  it("creates from gitSource after a deployment-list network error", () => {
+    const result = runRedeploy({
+      scenario: "api-list-network-error",
+      token: apiToken,
+      projectId: "project-test",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.calls).toEqual(["api-list", "api-create"]);
+    expect(result.writtenEnvironment).toContain(
+      "VERCEL_REDEPLOY_STATUS=triggered via API redeploy",
+    );
+    expect(result.output).toContain(
+      "Deployment list unavailable. Creating directly from gitSource.",
+    );
   });
 
   it("does not print hook, token, query, or response secrets", () => {
