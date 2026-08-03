@@ -7,13 +7,17 @@
 //
 // Usage:
 //   npm run db:migrate          # apply any new migrations
-//   npm run db:migrate --reset  # drop the public schema, then apply all
+//   npm run db:migrate --reset  # reset a local public schema, then apply all
 
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import postgres from "postgres";
 import { loadEnv } from "../src/env.js";
-import { findSupabaseLedgerMatches } from "./migration-ledger.js";
+import { assertLocalDatabaseReset } from "./database-reset-safety.js";
+import {
+  assertMigrationOrder,
+  findSupabaseLedgerMatches,
+} from "./migration-ledger.js";
 
 const MIGRATIONS_DIR = resolve(process.cwd(), "supabase/migrations");
 
@@ -25,6 +29,9 @@ async function listMigrations(): Promise<string[]> {
 async function main(): Promise<void> {
   const env = loadEnv();
   const reset = process.argv.includes("--reset");
+  if (reset) {
+    assertLocalDatabaseReset(env.SUPABASE_DB_URL);
+  }
 
   const sql = postgres(env.SUPABASE_DB_URL, {
     prepare: false,
@@ -67,35 +74,35 @@ async function main(): Promise<void> {
       `;
 
       if (supabaseLedger?.exists) {
-        const supabaseMigrationNames = new Set(
-          (
-            await sql<{ name: string }[]>`
-              select name
-              from supabase_migrations.schema_migrations
-              where name is not null and btrim(name) <> ''
-            `
-          ).map((row) => row.name),
-        );
+        const supabaseMigrations = await sql<
+          { version: string; name: string | null }[]
+        >`
+          select version, name
+          from supabase_migrations.schema_migrations
+        `;
         const reconciled = findSupabaseLedgerMatches({
           repositoryFiles: files,
           appliedFiles: applied,
-          supabaseMigrationNames,
+          supabaseMigrations,
         });
 
         if (reconciled.length > 0) {
           await sql.begin(async (tx) => {
-            for (const file of reconciled) {
+            for (const match of reconciled) {
               await tx`
                 insert into public._migrations (name)
-                values (${file})
+                values (${match.repositoryFileName})
                 on conflict (name) do nothing
               `;
             }
           });
         }
 
-        for (const file of reconciled) {
-          applied.add(file);
+        for (const match of reconciled) {
+          applied.add(match.repositoryFileName);
+          console.log(
+            `[migrate] reconciled ${match.repositoryFileName} from Supabase ${match.supabaseVersion}`,
+          );
         }
 
         console.log(
@@ -104,6 +111,10 @@ async function main(): Promise<void> {
       }
     }
 
+    assertMigrationOrder({
+      repositoryFiles: files,
+      appliedFiles: applied,
+    });
     const pending = files.filter((file) => !applied.has(file));
 
     if (pending.length === 0) {

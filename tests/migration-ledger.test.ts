@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { findSupabaseLedgerMatches } from "../scripts/migration-ledger.js";
+import {
+  assertMigrationOrder,
+  findSupabaseLedgerMatches,
+} from "../scripts/migration-ledger.js";
+
+const supabaseMigration = (version: string, name: string | null) => ({
+  version,
+  name,
+});
 
 describe("findSupabaseLedgerMatches", () => {
   it("reconciles a repository file by name when the CLI timestamp differs", () => {
@@ -12,9 +20,14 @@ describe("findSupabaseLedgerMatches", () => {
       findSupabaseLedgerMatches({
         repositoryFiles: ["20260801140000_ops_demo_outages.sql"],
         appliedFiles: new Set(),
-        supabaseMigrationNames: new Set([supabaseLedgerRow.name]),
+        supabaseMigrations: [supabaseLedgerRow],
       }),
-    ).toEqual(["20260801140000_ops_demo_outages.sql"]);
+    ).toEqual([
+      {
+        repositoryFileName: "20260801140000_ops_demo_outages.sql",
+        supabaseVersion: "20260802003053",
+      },
+    ]);
   });
 
   it("does not reconcile files already recorded in the app ledger", () => {
@@ -24,7 +37,9 @@ describe("findSupabaseLedgerMatches", () => {
       findSupabaseLedgerMatches({
         repositoryFiles: [fileName],
         appliedFiles: new Set([fileName]),
-        supabaseMigrationNames: new Set(["ops_demo_outages"]),
+        supabaseMigrations: [
+          supabaseMigration("20260802003053", "ops_demo_outages"),
+        ],
       }),
     ).toEqual([]);
   });
@@ -39,10 +54,10 @@ describe("findSupabaseLedgerMatches", () => {
           "20260801150000_other_migration.sql",
         ],
         appliedFiles: new Set(),
-        supabaseMigrationNames: new Set([
-          "ops_demo_outages",
-          "unrelated_migration",
-        ]),
+        supabaseMigrations: [
+          supabaseMigration("20260802003053", "ops_demo_outages"),
+          supabaseMigration("20260802003054", "unrelated_migration"),
+        ],
       }),
     ).toEqual([]);
   });
@@ -55,14 +70,38 @@ describe("findSupabaseLedgerMatches", () => {
           "20260801140000_first_migration.sql",
         ],
         appliedFiles: new Set(),
-        supabaseMigrationNames: new Set([
-          "first_migration",
-          "second_migration",
-        ]),
+        supabaseMigrations: [
+          supabaseMigration("20260802003053", "first_migration"),
+          supabaseMigration("20260802003054", "second_migration"),
+        ],
       }),
     ).toEqual([
-      "20260801150000_second_migration.sql",
-      "20260801140000_first_migration.sql",
+      {
+        repositoryFileName: "20260801150000_second_migration.sql",
+        supabaseVersion: "20260802003054",
+      },
+      {
+        repositoryFileName: "20260801140000_first_migration.sql",
+        supabaseVersion: "20260802003053",
+      },
+    ]);
+  });
+
+  it("matches an unnamed Supabase repair by exact version", () => {
+    expect(
+      findSupabaseLedgerMatches({
+        repositoryFiles: ["20260801140000_ops_demo_outages.sql"],
+        appliedFiles: new Set(),
+        supabaseMigrations: [
+          supabaseMigration("20260801140000", null),
+          supabaseMigration("20260801150000", ""),
+        ],
+      }),
+    ).toEqual([
+      {
+        repositoryFileName: "20260801140000_ops_demo_outages.sql",
+        supabaseVersion: "20260801140000",
+      },
     ]);
   });
 
@@ -74,8 +113,28 @@ describe("findSupabaseLedgerMatches", () => {
           "20260801150000_duplicate_name.sql",
         ],
         appliedFiles: new Set(),
-        supabaseMigrationNames: new Set(["duplicate_name"]),
+        supabaseMigrations: [
+          supabaseMigration("20260802003053", "duplicate_name"),
+        ],
       }),
     ).toThrow('Duplicate repository migration name "duplicate_name"');
+  });
+
+  it("rejects an applied migration after a pending file", () => {
+    expect(() =>
+      assertMigrationOrder({
+        repositoryFiles: [
+          "20260801140000_first.sql",
+          "20260801150000_second.sql",
+          "20260801160000_third.sql",
+        ],
+        appliedFiles: new Set([
+          "20260801140000_first.sql",
+          "20260801160000_third.sql",
+        ]),
+      }),
+    ).toThrow(
+      "Migration ledger gap. 20260801150000_second.sql is pending before applied 20260801160000_third.sql",
+    );
   });
 });
