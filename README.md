@@ -32,13 +32,16 @@ npm run dev
 | `npm run db:seed` | Upsert catalog + regenerate rolling demo data |
 | `npm run db:wipe` | `truncate … restart identity cascade` every table, keeps schema |
 | `npm run db:reseed` | `db:wipe` then `db:seed` (data refresh, no schema change) |
-| `npm run db:reset` | Drop the `public` schema entirely, re-apply migrations, re-seed |
+| `npm run db:reset` | Local only. Drop `public`, re-apply migrations, and re-seed |
 
 ### Picking the right reset
 
 - **Schema is fine, want fresh data** → `npm run db:reseed`
-- **Schema has changed and you want a clean slate** → `npm run db:reset`
+- **Local schema has changed and you want a clean slate** → `npm run db:reset`
 - **Just delete everything without re-seeding** → `npm run db:wipe`
+
+`db:reset` refuses non-local database hosts. Use checked-in migrations and
+`db:reseed` against hosted Supabase projects.
 
 `db:seed` itself is idempotent and safe to re-run on its own — it
 upserts catalog rows, replaces future inventory, and recreates demo
@@ -81,7 +84,7 @@ src/domain/                     Booking lifecycle (loader, totals, booking, seat
 src/routes/                     One file per resource (health, airports, routes, flights, bookings, me, cron)
 supabase/migrations/            Hand-written SQL — source of truth for the schema
 supabase/config.toml            Local Supabase CLI config (optional)
-scripts/migrate.ts              Apply SQL migrations; --reset drops the schema first
+scripts/migrate.ts              Apply SQL migrations; --reset is local-only
 scripts/seed.ts                 CLI wrapper for reusable seed pipeline
 scripts/wipe.ts                 Truncate every table without touching the schema
 tests/                          Vitest unit tests
