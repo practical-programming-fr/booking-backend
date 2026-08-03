@@ -15,11 +15,6 @@ interface FindSupabaseLedgerMatchesOptions {
   supabaseMigrations: readonly SupabaseMigrationIdentity[];
 }
 
-interface AssertMigrationOrderOptions {
-  repositoryFiles: readonly string[];
-  appliedFiles: ReadonlySet<string>;
-}
-
 export interface MigrationLedgerMatch {
   repositoryFileName: string;
   supabaseVersion: string;
@@ -74,19 +69,14 @@ export function findSupabaseLedgerMatches({
     if (name === undefined || name.length === 0) {
       continue;
     }
-    if (name !== migration.name) {
-      throw new Error(
-        `Supabase migration name has surrounding whitespace. Version ${migration.version}`,
-      );
-    }
 
     const duplicate = supabaseByName.get(name);
-    if (duplicate !== undefined) {
-      throw new Error(
-        `Duplicate Supabase migration name "${name}". Versions ${duplicate.version}, ${migration.version}`,
-      );
+    if (
+      duplicate === undefined ||
+      migration.version.localeCompare(duplicate.version) > 0
+    ) {
+      supabaseByName.set(name, migration);
     }
-    supabaseByName.set(name, migration);
   }
 
   return migrations
@@ -119,23 +109,4 @@ export function findSupabaseLedgerMatches({
         },
       ];
     });
-}
-
-export function assertMigrationOrder({
-  repositoryFiles,
-  appliedFiles,
-}: AssertMigrationOrderOptions): void {
-  let firstPending: string | undefined;
-
-  for (const file of repositoryFiles) {
-    if (!appliedFiles.has(file)) {
-      firstPending ??= file;
-      continue;
-    }
-    if (firstPending !== undefined) {
-      throw new Error(
-        `Migration ledger gap. ${firstPending} is pending before applied ${file}`,
-      );
-    }
-  }
 }

@@ -156,7 +156,7 @@ npm test
 ### Reset story
 
 - `npm run db:reseed` — wipe data, regenerate demo inventory/bookings (most common).
-- `npm run db:reset`  — drop the schema, re-apply migrations, re-seed.
+- `npm run db:reset` is local only. It drops `public`, re-applies migrations, and re-seeds.
 - `npm run db:wipe`   — truncate everything, leave the schema in place.
 
 ### Realistic inventory

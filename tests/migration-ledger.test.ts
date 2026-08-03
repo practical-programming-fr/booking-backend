@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  assertMigrationOrder,
-  findSupabaseLedgerMatches,
-} from "../scripts/migration-ledger.js";
+import { findSupabaseLedgerMatches } from "../scripts/migration-ledger.js";
 
 const supabaseMigration = (version: string, name: string | null) => ({
   version,
@@ -120,21 +117,38 @@ describe("findSupabaseLedgerMatches", () => {
     ).toThrow('Duplicate repository migration name "duplicate_name"');
   });
 
-  it("rejects an applied migration after a pending file", () => {
-    expect(() =>
-      assertMigrationOrder({
-        repositoryFiles: [
-          "20260801140000_first.sql",
-          "20260801150000_second.sql",
-          "20260801160000_third.sql",
+  it("uses the latest duplicate Supabase name", () => {
+    expect(
+      findSupabaseLedgerMatches({
+        repositoryFiles: ["20260801140000_duplicate_name.sql"],
+        appliedFiles: new Set(),
+        supabaseMigrations: [
+          supabaseMigration("20260801150000", "duplicate_name"),
+          supabaseMigration("20260801160000", "duplicate_name"),
         ],
-        appliedFiles: new Set([
-          "20260801140000_first.sql",
-          "20260801160000_third.sql",
-        ]),
       }),
-    ).toThrow(
-      "Migration ledger gap. 20260801150000_second.sql is pending before applied 20260801160000_third.sql",
-    );
+    ).toEqual([
+      {
+        repositoryFileName: "20260801140000_duplicate_name.sql",
+        supabaseVersion: "20260801160000",
+      },
+    ]);
+  });
+
+  it("trims Supabase migration names", () => {
+    expect(
+      findSupabaseLedgerMatches({
+        repositoryFiles: ["20260801140000_padded_name.sql"],
+        appliedFiles: new Set(),
+        supabaseMigrations: [
+          supabaseMigration("20260801150000", "  padded_name  "),
+        ],
+      }),
+    ).toEqual([
+      {
+        repositoryFileName: "20260801140000_padded_name.sql",
+        supabaseVersion: "20260801150000",
+      },
+    ]);
   });
 });

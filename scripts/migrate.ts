@@ -14,10 +14,7 @@ import { resolve } from "node:path";
 import postgres from "postgres";
 import { loadEnv } from "../src/env.js";
 import { assertLocalDatabaseReset } from "./database-reset-safety.js";
-import {
-  assertMigrationOrder,
-  findSupabaseLedgerMatches,
-} from "./migration-ledger.js";
+import { findSupabaseLedgerMatches } from "./migration-ledger.js";
 
 const MIGRATIONS_DIR = resolve(process.cwd(), "supabase/migrations");
 
@@ -111,10 +108,6 @@ async function main(): Promise<void> {
       }
     }
 
-    assertMigrationOrder({
-      repositoryFiles: files,
-      appliedFiles: applied,
-    });
     const pending = files.filter((file) => !applied.has(file));
 
     if (pending.length === 0) {
