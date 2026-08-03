@@ -2,9 +2,8 @@
 //
 // Reads SQL files from `supabase/migrations/*.sql`, applies them in
 // lexicographic order, and records which files have been applied in a
-// `_migrations` table. We can drop the supabase CLI requirement entirely
-// because the only thing it does for us is push migrations, and the same
-// thing is easy to do with a few lines of pg.
+// `_migrations` table. If the Supabase CLI ledger exists, matching migration
+// names are reconciled before pending files are applied.
 //
 // Usage:
 //   npm run db:migrate          # apply any new migrations
@@ -14,6 +13,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import postgres from "postgres";
 import { loadEnv } from "../src/env.js";
+import { findSupabaseLedgerMatches } from "./migration-ledger.js";
 
 const MIGRATIONS_DIR = resolve(process.cwd(), "supabase/migrations");
 
@@ -58,6 +58,52 @@ async function main(): Promise<void> {
     );
 
     const files = await listMigrations();
+
+    if (!reset) {
+      const [supabaseLedger] = await sql<{ exists: boolean }[]>`
+        select to_regclass(
+          'supabase_migrations.schema_migrations'
+        ) is not null as exists
+      `;
+
+      if (supabaseLedger?.exists) {
+        const supabaseMigrationNames = new Set(
+          (
+            await sql<{ name: string }[]>`
+              select name
+              from supabase_migrations.schema_migrations
+              where name is not null and btrim(name) <> ''
+            `
+          ).map((row) => row.name),
+        );
+        const reconciled = findSupabaseLedgerMatches({
+          repositoryFiles: files,
+          appliedFiles: applied,
+          supabaseMigrationNames,
+        });
+
+        if (reconciled.length > 0) {
+          await sql.begin(async (tx) => {
+            for (const file of reconciled) {
+              await tx`
+                insert into public._migrations (name)
+                values (${file})
+                on conflict (name) do nothing
+              `;
+            }
+          });
+        }
+
+        for (const file of reconciled) {
+          applied.add(file);
+        }
+
+        console.log(
+          `[migrate] reconciled ${reconciled.length} migration(s) from Supabase ledger`,
+        );
+      }
+    }
+
     const pending = files.filter((file) => !applied.has(file));
 
     if (pending.length === 0) {
