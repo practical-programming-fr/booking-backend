@@ -82,9 +82,8 @@ else
 fi
 
 if ! is_success_status "$list_http"; then
-  echo "::warning::Vercel deployment list failed (HTTP ${list_http}). Wait-for-health will still gate migrate/ops."
-  write_status "failed: API deployment list HTTP ${list_http}"
-  exit 0
+  echo "::warning::Vercel deployment list failed (HTTP ${list_http}). Falling back to a gitSource production deployment."
+  : > "$response_file"
 fi
 
 deployment_id=""
