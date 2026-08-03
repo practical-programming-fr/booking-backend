@@ -62,6 +62,7 @@ async function main(): Promise<void> {
     );
 
     const files = await listMigrations();
+    let supabaseMigrations: { version: string; name: string | null }[] = [];
 
     if (!reset) {
       const [supabaseLedger] = await sql<{ exists: boolean }[]>`
@@ -71,41 +72,44 @@ async function main(): Promise<void> {
       `;
 
       if (supabaseLedger?.exists) {
-        const supabaseMigrations = await sql<
+        supabaseMigrations = await sql<
           { version: string; name: string | null }[]
         >`
           select version, name
           from supabase_migrations.schema_migrations
         `;
-        const reconciled = findSupabaseLedgerMatches({
-          repositoryFiles: files,
-          appliedFiles: applied,
-          supabaseMigrations,
-        });
-
-        if (reconciled.length > 0) {
-          await sql.begin(async (tx) => {
-            for (const match of reconciled) {
-              await tx`
-                insert into public._migrations (name)
-                values (${match.repositoryFileName})
-                on conflict (name) do nothing
-              `;
-            }
-          });
-        }
-
-        for (const match of reconciled) {
-          applied.add(match.repositoryFileName);
-          console.log(
-            `[migrate] reconciled ${match.repositoryFileName} from Supabase ${match.supabaseVersion}`,
-          );
-        }
-
-        console.log(
-          `[migrate] reconciled ${reconciled.length} migration(s) from Supabase ledger`,
-        );
       }
+    }
+
+    const reconciled = findSupabaseLedgerMatches({
+      repositoryFiles: files,
+      appliedFiles: applied,
+      supabaseMigrations,
+    });
+
+    if (reconciled.length > 0) {
+      await sql.begin(async (tx) => {
+        for (const match of reconciled) {
+          await tx`
+            insert into public._migrations (name)
+            values (${match.repositoryFileName})
+            on conflict (name) do nothing
+          `;
+        }
+      });
+    }
+
+    for (const match of reconciled) {
+      applied.add(match.repositoryFileName);
+      console.log(
+        `[migrate] reconciled ${match.repositoryFileName} from Supabase ${match.supabaseVersion}`,
+      );
+    }
+
+    if (supabaseMigrations.length > 0) {
+      console.log(
+        `[migrate] reconciled ${reconciled.length} migration(s) from Supabase ledger`,
+      );
     }
 
     const pending = files.filter((file) => !applied.has(file));

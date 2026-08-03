@@ -49,6 +49,7 @@ export function findSupabaseLedgerMatches({
     return migration === undefined ? [] : [migration];
   });
   const filesByMigrationName = new Map<string, string>();
+  const filesByVersion = new Map<string, string>();
   const supabaseByName = new Map<string, SupabaseMigrationIdentity>();
   const supabaseByVersion = new Map<string, SupabaseMigrationIdentity>();
 
@@ -60,6 +61,14 @@ export function findSupabaseLedgerMatches({
       );
     }
     filesByMigrationName.set(migration.migrationName, migration.fileName);
+
+    const duplicateVersion = filesByVersion.get(migration.version);
+    if (duplicateVersion !== undefined) {
+      throw new Error(
+        `Duplicate repository migration version "${migration.version}": ${duplicateVersion}, ${migration.fileName}`,
+      );
+    }
+    filesByVersion.set(migration.version, migration.fileName);
   }
 
   for (const migration of supabaseMigrations) {

@@ -110,11 +110,24 @@ describe("findSupabaseLedgerMatches", () => {
           "20260801150000_duplicate_name.sql",
         ],
         appliedFiles: new Set(),
-        supabaseMigrations: [
-          supabaseMigration("20260802003053", "duplicate_name"),
-        ],
+        supabaseMigrations: [],
       }),
     ).toThrow('Duplicate repository migration name "duplicate_name"');
+  });
+
+  it("rejects duplicate repository migration versions", () => {
+    expect(() =>
+      findSupabaseLedgerMatches({
+        repositoryFiles: [
+          "20260801140000_first_name.sql",
+          "20260801140000_second_name.sql",
+        ],
+        appliedFiles: new Set(),
+        supabaseMigrations: [
+          supabaseMigration("20260801140000", null),
+        ],
+      }),
+    ).toThrow('Duplicate repository migration version "20260801140000"');
   });
 
   it("uses the latest duplicate Supabase name", () => {
