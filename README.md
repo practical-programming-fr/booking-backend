@@ -234,11 +234,13 @@ env / Cloud Agent secrets); never commit them.
 
 ## Ops runtime (the "3am outage" demo)
 
-The repo carries a deliberately seeded bug in
-`src/domain/fare-adjustment.ts`, dormant behind the `fare_adjustment_v2`
-ops flag. Flipping the flag on breaks the shared pricing path (search,
-flight detail, booking creation) with real 500s; flipping it off recovers
-instantly. State lives in the `ops_flags`, `ops_errors`, and
+`fare_adjustment_v2` still gates a per-route fuel surcharge on the shared
+pricing path (search, flight detail, booking creation, and total recompute).
+With the flag off and no scoped run, the surcharge is 0. With the flag on,
+or a scoped outage active for that request, the schedule in
+`src/domain/fare-adjustment.ts` is added. The schedule is keyed
+`ORIGIN-DEST`. A route with no band (including CDG-LHR and LHR-CDG) adds 0
+and pricing still succeeds. State lives in the `ops_flags`, `ops_errors`, and
 `ops_incidents` tables, exposed via `/v1/_ops/*` (bearer
 `OPS_SHARED_SECRET`). The incident console that drives the demo lives in
 `booking-frontend` at `/ops`; `.github/workflows/demo-cleanup.yml` closes

@@ -4,8 +4,7 @@
 
 import type postgres from "postgres";
 import type { BookingTotals } from "./types.js";
-import { fuelSurchargeEur } from "./fare-adjustment.js";
-import { isOutageActiveForRequest } from "./ops.js";
+import { fuelSurchargeForRequest } from "./fare-adjustment.js";
 import { computePromoDiscountEur, lookupPromo } from "./promo.js";
 
 export async function recomputeBookingTotals(
@@ -88,22 +87,20 @@ export async function recomputeBookingTotals(
   `) as unknown as Array<{ meals_eur: number }>;
   const mealsEur = mealSumRows[0]?.meals_eur ?? 0;
 
-  const surchargeOn = await isOutageActiveForRequest(sql, {
+  const fuelSurcharge = await fuelSurchargeForRequest(sql, {
     bookingSessionId: bookingRow[0]!.session_id,
   });
-  const fuelEur = surchargeOn
-    ? fareRows.reduce(
-        (sum, row) =>
-          sum +
-          fuelSurchargeEur({
-            origin: row.from_iata,
-            destination: row.to_iata,
-            baseEur: row.base_eur,
-            pax,
-          }),
-        0,
-      )
-    : 0;
+  const fuelEur = fareRows.reduce(
+    (sum, row) =>
+      sum +
+      fuelSurcharge({
+        origin: row.from_iata,
+        destination: row.to_iata,
+        baseEur: row.base_eur,
+        pax,
+      }),
+    0,
+  );
 
   const preDiscountTotal =
     baseEur + seatsEur + mealsEur + taxesEur + surfaceEur + fuelEur;

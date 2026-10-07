@@ -15,8 +15,7 @@ import {
   seatMapTemplates,
 } from "../db/schema.js";
 import { loadFlightBriefing, loadFlightManifest } from "../domain/manifest.js";
-import { isOutageActiveForRequest } from "../domain/ops.js";
-import { fuelSurchargeEur } from "../domain/fare-adjustment.js";
+import { fuelSurchargeForRequest } from "../domain/fare-adjustment.js";
 import {
   bookingSessionIdFrom,
   demoSessionIdFrom,
@@ -56,21 +55,6 @@ export function flightsRoutes(): Hono {
   app.get("/search", zValidator("query", searchSchema), async (c) => {
     const { from, to, date, pax, cabin } = c.req.valid("query");
 
-    // DEMO BUG (demo/pricing-outage): LHR→CDG search fails while /v1/health stays green.
-    // Remove this block to restore pricing for London Heathrow → Paris CDG.
-    if (from.toUpperCase() === "LHR" && to.toUpperCase() === "CDG") {
-      return c.json(
-        {
-          error: {
-            message: "Pricing service unavailable for this route",
-            code: "PRICING_OUTAGE_DEMO",
-            route: "LHR-CDG",
-          },
-        },
-        503,
-      );
-    }
-
     const db = getDb();
 
     const dayStart = new Date(`${date}T00:00:00Z`);
@@ -97,7 +81,7 @@ export function flightsRoutes(): Hono {
     }
 
     const route = matchingRoutes[0]!;
-    const surchargeOn = await isOutageActiveForRequest(getSql(), {
+    const fuelSurcharge = await fuelSurchargeForRequest(getSql(), {
       demoSessionId: demoSessionIdFrom(c),
       bookingSessionId: bookingSessionIdFrom(c),
     });
@@ -162,14 +146,12 @@ export function flightsRoutes(): Hono {
         durationMin: flight.durationMin,
         status: flight.status,
         fares: sortedFares.map((fare) => {
-          const surcharge = surchargeOn
-            ? fuelSurchargeEur({
-                origin: route.fromIata,
-                destination: route.toIata,
-                baseEur: fare.baseEur,
-                pax,
-              })
-            : 0;
+          const surcharge = fuelSurcharge({
+            origin: route.fromIata,
+            destination: route.toIata,
+            baseEur: fare.baseEur,
+            pax,
+          });
           return {
             cabin: fare.cabin,
             baseEur: fare.baseEur,
@@ -210,7 +192,7 @@ export function flightsRoutes(): Hono {
     }
 
     const route = matchingRoutes[0]!;
-    const surchargeOn = await isOutageActiveForRequest(getSql(), {
+    const fuelSurcharge = await fuelSurchargeForRequest(getSql(), {
       demoSessionId: demoSessionIdFrom(c),
       bookingSessionId: bookingSessionIdFrom(c),
     });
@@ -241,14 +223,12 @@ export function flightsRoutes(): Hono {
       cabin,
       days: rows.map((row) => {
         const fromEur = Number(row.minBase);
-        const surcharge = surchargeOn
-          ? fuelSurchargeEur({
-              origin: route.fromIata,
-              destination: route.toIata,
-              baseEur: fromEur,
-              pax: 1,
-            })
-          : 0;
+        const surcharge = fuelSurcharge({
+          origin: route.fromIata,
+          destination: route.toIata,
+          baseEur: fromEur,
+          pax: 1,
+        });
         return {
           date: row.date,
           fromEur: fromEur + surcharge,
@@ -340,7 +320,7 @@ export function flightsRoutes(): Hono {
       .where(eq(flightFares.flightId, id))
       .orderBy(asc(cabins.sortOrder));
 
-    const surchargeOn = await isOutageActiveForRequest(getSql(), {
+    const fuelSurcharge = await fuelSurchargeForRequest(getSql(), {
       demoSessionId: demoSessionIdFrom(c),
       bookingSessionId: bookingSessionIdFrom(c),
     });
@@ -368,14 +348,12 @@ export function flightsRoutes(): Hono {
           freqPerWeek: row.route.freqPerWeek,
         },
         fares: fareRows.map(({ fare, cabin }) => {
-          const surchargeEur = surchargeOn
-            ? fuelSurchargeEur({
-                origin: row.fromAirport.iata,
-                destination: row.toAirport.iata,
-                baseEur: fare.baseEur,
-                pax: 1,
-              })
-            : 0;
+          const surchargeEur = fuelSurcharge({
+            origin: row.fromAirport.iata,
+            destination: row.toAirport.iata,
+            baseEur: fare.baseEur,
+            pax: 1,
+          });
           return {
             cabin: cabin.code,
             cabinName: cabin.name,
