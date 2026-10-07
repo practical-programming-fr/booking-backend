@@ -55,6 +55,22 @@ export function flightsRoutes(): Hono {
   // --- /v1/flights/search ----------------------------------------------------
   app.get("/search", zValidator("query", searchSchema), async (c) => {
     const { from, to, date, pax, cabin } = c.req.valid("query");
+
+    // DEMO BUG (demo/pricing-outage): LHR→CDG search fails while /v1/health stays green.
+    // Remove this block to restore pricing for London Heathrow → Paris CDG.
+    if (from.toUpperCase() === "LHR" && to.toUpperCase() === "CDG") {
+      return c.json(
+        {
+          error: {
+            message: "Pricing service unavailable for this route",
+            code: "PRICING_OUTAGE_DEMO",
+            route: "LHR-CDG",
+          },
+        },
+        503,
+      );
+    }
+
     const db = getDb();
 
     const dayStart = new Date(`${date}T00:00:00Z`);
