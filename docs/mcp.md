@@ -162,8 +162,9 @@ Binding does not activate the outage.
 `trigger_demo_outage` requires a bound pending run. It returns
 `outage_not_bound` if the activation URL has not been opened and
 `outage_not_pending` if the run was already triggered or cleared. Once
-triggered, pricing requests from the bound browser fail while other browsers
-remain healthy.
+triggered, pricing requests from the bound browser include that browser's
+fuel surcharge while other browsers stay on the base fare. A route with no
+surcharge band is unchanged.
 
 `clear_demo_outage` clears only the run matching the handle. The global
 `fare_adjustment_v2` flag and other presenters remain unchanged. The default
@@ -173,7 +174,7 @@ The tools run server-side inside booking-backend and never expose the ops
 shared secret. The public booking origin used to build the activation link
 comes from `DEMO_BOOKING_WEB_URL` (defaulting to the FlyLo demo domain).
 Multiple presenters can each hold their own active run at once; only their
-bound browser session 500s. The existing `x-demo-session` path stays available
+bound browser session picks up the surcharge. The existing `x-demo-session` path stays available
 to the Ops Console and crew NOC, backed by the same `ops_demo_outages` table.
 
 `request_marketing_change` files a marketing-request ticket into Jira. It

@@ -5,8 +5,7 @@
 import type postgres from "postgres";
 import { generatePnr } from "../lib/pnr.js";
 import { recomputeBookingTotals } from "./totals.js";
-import { isOutageActiveForRequest } from "./ops.js";
-import { fuelSurchargeEur } from "./fare-adjustment.js";
+import { fuelSurchargeForRequest } from "./fare-adjustment.js";
 import type { CabinCode, ContactDetails } from "./types.js";
 
 export const HOLD_MINUTES = 10;
@@ -128,18 +127,16 @@ export async function createDraftBooking(
       (fare.taxes_eur > 0 ? fare.taxes_eur : Math.round(fare.base_eur * 0.14)) *
       input.pax;
     const surfaceEur = fare.surface_eur * input.pax;
-    const surchargeOn = await isOutageActiveForRequest(sql, {
+    const fuelSurcharge = await fuelSurchargeForRequest(sql, {
       demoSessionId: input.demoSessionId,
       bookingSessionId: input.sessionId,
     });
-    const fuelEur = surchargeOn
-      ? fuelSurchargeEur({
-          origin: fare.from_iata,
-          destination: fare.to_iata,
-          baseEur: fare.base_eur,
-          pax: input.pax,
-        })
-      : 0;
+    const fuelEur = fuelSurcharge({
+      origin: fare.from_iata,
+      destination: fare.to_iata,
+      baseEur: fare.base_eur,
+      pax: input.pax,
+    });
     const totalEur = baseEur + taxesEur + surfaceEur + fuelEur;
 
     await tx`
